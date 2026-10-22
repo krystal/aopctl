@@ -678,6 +678,65 @@ func TestZonePrune(t *testing.T) {
 		}
 	})
 
+	// otherFallback has zone-level AOP enabled, with zoneOld, the CA's, in
+	// use and an older active certificate, zoneTwo, from another CA.
+	otherFallback := func(t *testing.T) *harness {
+		t.Helper()
+		h := newHarness(t)
+		h.fake.ZoneEnabled = true
+		h.fake.AddZoneCert(zoneTwo, newTestCA(t, 3650).issue(t), cftest.UploadedOn(1))
+		h.fake.AddZoneCert(zoneOld, h.ca.issue(t), cftest.UploadedOn(2))
+		return h
+	}
+	fallbackWarning := "Warning: after the deletes, Cloudflare uses certificate " + zoneTwo + " for every origin without a per-hostname certificate. AOP_CA_CERT did not sign it"
+
+	t.Run("falls back to another CA, declined", func(t *testing.T) {
+		h := otherFallback(t)
+		tty := answer(h, "n\n")
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld)
+		if !strings.Contains(tty.prompt.String(), "[y/N]") {
+			t.Errorf("prompt = %q", tty.prompt.String())
+		}
+		for _, want := range []string{
+			fallbackWarning,
+			"After the deletes, Cloudflare uses: " + zoneTwo + " (derived: the newest remaining active certificate), signed by AOP_CA_CERT: no",
+		} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("stderr lacks %q:\n%s", want, stderr)
+			}
+		}
+		if code != 1 || len(deletes(h)) != 0 {
+			t.Errorf("exit %d, deleted %v", code, deletes(h))
+		}
+	})
+
+	t.Run("falls back to another CA, yes", func(t *testing.T) {
+		h := otherFallback(t)
+		noPrompt(t, h)
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
+		if code != 0 || strings.Join(deletes(h), ",") != zoneOld || !strings.Contains(stderr, fallbackWarning) {
+			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
+		}
+	})
+
+	t.Run("falls back to the CA's own certificate", func(t *testing.T) {
+		h := zoneHarness(t)
+		h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(2))
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneTwo, "--yes")
+		if code != 0 || strings.Contains(stderr, "Warning") || !strings.Contains(stderr, "After the deletes, Cloudflare uses: "+zoneOld) {
+			t.Errorf("exit %d; stderr:\n%s", code, stderr)
+		}
+	})
+
+	t.Run("other CA left in place while disabled", func(t *testing.T) {
+		h := otherFallback(t)
+		h.fake.ZoneEnabled = false
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
+		if code != 0 || strings.Contains(stderr, "Warning") {
+			t.Errorf("exit %d; stderr:\n%s", code, stderr)
+		}
+	})
+
 	t.Run("last active while enabled", func(t *testing.T) {
 		h := zoneHarness(t)
 		noPrompt(t, h)

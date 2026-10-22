@@ -36,7 +36,8 @@ type ZonePrunePlan struct {
 // named certificate. It skips certificates that are missing, already
 // deleted or not signed by the CA. While zone-level AOP is enabled, it also
 // skips the newest of the targets when deleting them all would leave no
-// active certificate. A read that fails for another reason fails the plan.
+// active certificate, which may change the certificate Cloudflare uses. A
+// read that fails for another reason fails the plan.
 func (c *Client) PlanZonePrune(ctx context.Context, r ZonePruneRequest) (*ZonePrunePlan, error) {
 	if err := checkCA(r.CACert); err != nil {
 		return nil, err
@@ -134,6 +135,35 @@ func lastActiveTarget(zone *ZoneStatusReport, targets []PruneTarget) int {
 // planned.
 func (p *ZonePrunePlan) Zone() *ZoneStatusReport {
 	return p.zone.clone()
+}
+
+// InUseAfter returns the certificate Cloudflare would use once every target
+// is deleted, derived as ZoneStatusReport.InUse does from the certificates
+// as planned. While zone-level AOP is enabled, deleting the certificate in
+// use makes Cloudflare fall back to the newest remaining active one.
+func (p *ZonePrunePlan) InUseAfter() (*CertificateInfo, bool) {
+	after := p.zone.clone()
+	after.Certificates = slices.DeleteFunc(after.Certificates, func(c CertificateInfo) bool {
+		return slices.ContainsFunc(p.targets, func(t PruneTarget) bool { return t.ID == c.ID })
+	})
+	return after.InUse()
+}
+
+// ReplacesOtherCA reports whether the deletes may make Cloudflare fall back
+// to a certificate the CA did not sign: zone-level AOP is enabled, the
+// certificate in use is a target or cannot be derived, and the one used
+// afterwards is not signed by the CA or cannot be derived. Origins that
+// trust only the CA would then reject Cloudflare's requests.
+func (p *ZonePrunePlan) ReplacesOtherCA() bool {
+	if !p.zone.Enabled {
+		return false
+	}
+	inUse, ok := p.zone.InUse()
+	if ok && (inUse == nil || !slices.ContainsFunc(p.targets, func(t PruneTarget) bool { return t.ID == inUse.ID })) {
+		return false
+	}
+	after, ok := p.InUseAfter()
+	return !ok || (after != nil && !after.SignedByCA)
 }
 
 // Targets returns the certificates Apply deletes, or waits for.

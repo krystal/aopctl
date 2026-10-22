@@ -365,7 +365,12 @@ must be UUIDs. Like `hostname prune`, it refuses a certificate that is missing
 or not signed by `AOP_CA_CERT`, and waits for one already being deleted. While
 zone-level AOP is enabled, it also refuses to delete the last active
 certificate. When you name every active certificate, it keeps the newest one.
-It checks the zone again just before each delete. It asks for confirmation
+It checks the zone again just before each delete. When it deletes the
+certificate in use, it shows the one Cloudflare falls back to: the newest
+remaining active certificate. It warns when `AOP_CA_CERT` did not sign that
+certificate, or when it cannot tell which one it is, because origins that trust
+only `AOP_CA_CERT` would then reject Cloudflare's requests. Deleting a new
+certificate to fall back to an older one is how you roll back a rotation. It asks for confirmation
 unless you pass `--yes`, and `--dry-run` shows the plan without deleting.
 
 `zone issue`, `zone enable` and `zone prune` take the same `--timeout` budget

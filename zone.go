@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,17 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// describeFallback names the certificate Cloudflare uses after a prune.
+func describeFallback(after *aopctl.CertificateInfo, ok bool) string {
+	switch {
+	case !ok:
+		return "unknown, the remaining active certificates' uploaded_on values are missing, unreadable or equal"
+	case after == nil:
+		return "none, no active certificate remains"
+	}
+	return fmt.Sprintf("%s (derived: the newest remaining active certificate), signed by AOP_CA_CERT: %s", after.ID, yesNo(after.SignedByCA))
 }
 
 func printLeaf(w io.Writer, leaf *x509.Certificate) {
@@ -389,10 +401,22 @@ func (a *app) zonePrune(args []string) error {
 				state += ", waiting for the earlier delete to finish"
 			}
 			if inUse != nil && t.ID == inUse.ID {
-				state += ", in use (derived), so Cloudflare switches to the newest remaining active certificate"
+				state += ", in use (derived)"
 			}
 			fmt.Fprintf(a.stderr, "  %s  %s, expires %s, status %s\n",
 				t.ID, t.X509.Subject.CommonName, t.X509.NotAfter.UTC().Format(time.RFC3339), state)
+		}
+		if inUse != nil && slices.ContainsFunc(targets, func(t aopctl.PruneTarget) bool { return t.ID == inUse.ID }) {
+			fmt.Fprintf(a.stderr, "After the deletes, Cloudflare uses: %s\n", describeFallback(plan.InUseAfter()))
+		}
+		if plan.ReplacesOtherCA() {
+			after, ok := plan.InUseAfter()
+			switch {
+			case !ok:
+				fmt.Fprintln(a.stderr, "Warning: aopctl cannot tell which certificate Cloudflare uses after the deletes. If AOP_CA_CERT did not sign it, origins that trust only AOP_CA_CERT reject Cloudflare's requests.")
+			default:
+				fmt.Fprintf(a.stderr, "Warning: after the deletes, Cloudflare uses certificate %s for every origin without a per-hostname certificate. AOP_CA_CERT did not sign it, so origins that trust only AOP_CA_CERT reject Cloudflare's requests.\n", after.ID)
+			}
 		}
 	}
 	if *dryRun {
