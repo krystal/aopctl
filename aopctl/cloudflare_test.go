@@ -241,7 +241,8 @@ func TestStalledRequest(t *testing.T) {
 	cancel()
 	select {
 	case err := <-errc:
-		require.ErrorIs(t, err, context.Canceled)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
 		assert.NotContains(t, err.Error(), cftest.Zone, "err contains the zone ID")
 	case <-time.After(10 * time.Second):
 		require.FailNow(t, "the request did not return after its context was cancelled")
