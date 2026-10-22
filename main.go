@@ -22,17 +22,17 @@ import (
 const usageText = `Usage: aopctl <command> [flags]
 
 Commands:
-  ca create       Create a CA and print a 1Password item template
-  ca show         Describe the CA certificate read from stdin
-  leaf issue      Issue a leaf, upload it and point the hostnames at it
-  leaf associate  Point the hostnames at an existing leaf
-  leaf status     List leaf certificates and hostname associations
-  leaf prune      Delete the named leaf certificates
-  version         Print the aopctl version
+  ca create           Create a CA and print a 1Password item template
+  ca show             Describe the CA certificate read from stdin
+  hostname issue      Issue a leaf, upload it and point the hostnames at it
+  hostname associate  Point the hostnames at an existing leaf
+  hostname status     List leaf certificates and hostname associations
+  hostname prune      Delete the named leaf certificates
+  version             Print the aopctl version
 
 Environment:
   AOP_CA_CERT           CA certificate PEM
-  AOP_CA_KEY            CA private key PEM (PKCS#8), for leaf issue
+  AOP_CA_KEY            CA private key PEM (PKCS#8), for hostname issue
   CLOUDFLARE_API_TOKEN  Zone > SSL and Certificates > Edit
   CLOUDFLARE_ZONE_ID    the zone's ID
   AOP_HOSTNAMES         hostnames this CA serves, comma- or space-separated
@@ -132,12 +132,12 @@ func (a *app) run(args []string) int {
 
 func (a *app) dispatch(args []string) error {
 	commands := map[string]func([]string) error{
-		"ca create":      a.caCreate,
-		"ca show":        a.caShow,
-		"leaf issue":     a.leafIssue,
-		"leaf associate": a.leafAssociate,
-		"leaf status":    a.leafStatus,
-		"leaf prune":     a.leafPrune,
+		"ca create":          a.caCreate,
+		"ca show":            a.caShow,
+		"hostname issue":     a.hostnameIssue,
+		"hostname associate": a.hostnameAssociate,
+		"hostname status":    a.hostnameStatus,
+		"hostname prune":     a.hostnamePrune,
 	}
 	if len(args) == 0 {
 		fmt.Fprint(a.stderr, usageText)
@@ -156,7 +156,7 @@ func (a *app) dispatch(args []string) error {
 			return cmd(args[2:])
 		}
 	}
-	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "leaf" || isVersion(args[0])) {
+	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "hostname" || isVersion(args[0])) {
 		fmt.Fprint(a.stderr, usageText)
 		return flag.ErrHelp
 	}

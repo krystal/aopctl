@@ -142,12 +142,12 @@ func TestUsage(t *testing.T) {
 		{nil, 2},
 		{[]string{"-h"}, 0},
 		{[]string{"help"}, 0},
-		{[]string{"leaf", "-h"}, 0},
-		{[]string{"leaf", "issue", "-h"}, 0},
+		{[]string{"hostname", "-h"}, 0},
+		{[]string{"hostname", "issue", "-h"}, 0},
 		{[]string{"ca"}, 2},
-		{[]string{"leaf", "rotate"}, 2},
-		{[]string{"leaf", "status", "extra"}, 2},
-		{[]string{"leaf", "status", "--bogus"}, 2},
+		{[]string{"hostname", "rotate"}, 2},
+		{[]string{"hostname", "status", "extra"}, 2},
+		{[]string{"hostname", "status", "--bogus"}, 2},
 		{[]string{"version", "-h"}, 0},
 		{[]string{"version", "extra"}, 2},
 	}
@@ -184,16 +184,16 @@ func TestDefaultKeyTypes(t *testing.T) {
 		t.Errorf("ca create validity = %s, want 3650 days", got)
 	}
 
-	code, _, stderr = h.run("leaf", "issue", "--dry-run", "--hostname", "app.example.com")
+	code, _, stderr = h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
 	if code != 0 {
-		t.Fatalf("leaf issue: exit %d; stderr:\n%s", code, stderr)
+		t.Fatalf("hostname issue: exit %d; stderr:\n%s", code, stderr)
 	}
 	if !strings.Contains(stderr, "key type:    ECDSA P-256") {
-		t.Errorf("leaf issue plan does not show a P-256 key:\n%s", stderr)
+		t.Errorf("hostname issue plan does not show a P-256 key:\n%s", stderr)
 	}
 	expires := h.now.UTC().Add(-time.Hour).AddDate(0, 0, 365).Format(time.RFC3339)
 	if !strings.Contains(stderr, "expires:     "+expires) {
-		t.Errorf("leaf issue plan does not expire after 365 days (%s):\n%s", expires, stderr)
+		t.Errorf("hostname issue plan does not expire after 365 days (%s):\n%s", expires, stderr)
 	}
 }
 
@@ -209,21 +209,21 @@ func TestUsageErrors(t *testing.T) {
 	}
 	tests := []usageTest{
 		{"ca key type", []string{"ca", "create", "--key-type", "ed25519"}, ""},
-		{"leaf key type", []string{"leaf", "issue", "--key-type", "rsa-2048", "--hostname", "a.example.com"}, ""},
+		{"hostname key type", []string{"hostname", "issue", "--key-type", "rsa-2048", "--hostname", "a.example.com"}, ""},
 		{"ca days zero", []string{"ca", "create", "--days", "0"}, ""},
-		{"leaf days negative", []string{"leaf", "issue", "--days", "-1", "--hostname", "a.example.com"}, ""},
-		{"issue timeout zero", []string{"leaf", "issue", "--timeout", "0s", "--hostname", "a.example.com"}, ""},
-		{"associate timeout negative", []string{"leaf", "associate", "--cert-id", "x", "--timeout", "-1s", "--hostname", "a.example.com"}, ""},
-		{"prune timeout zero", []string{"leaf", "prune", "--cert-id", "x", "--timeout", "0s", "--hostname", "a.example.com"}, ""},
-		{"101 hostnames from env", []string{"leaf", "issue", "--dry-run"}, strings.Join(hosts, ",")},
-		{"101 hostname flags", append([]string{"leaf", "issue", "--dry-run"}, hostnameArgs(hosts)...), ""},
-		{"associate without cert id", []string{"leaf", "associate", "--hostname", "a.example.com"}, ""},
-		{"invalid hostname", []string{"leaf", "status", "--hostname", "*.example.com"}, ""},
+		{"hostname days negative", []string{"hostname", "issue", "--days", "-1", "--hostname", "a.example.com"}, ""},
+		{"issue timeout zero", []string{"hostname", "issue", "--timeout", "0s", "--hostname", "a.example.com"}, ""},
+		{"associate timeout negative", []string{"hostname", "associate", "--cert-id", "x", "--timeout", "-1s", "--hostname", "a.example.com"}, ""},
+		{"prune timeout zero", []string{"hostname", "prune", "--cert-id", "x", "--timeout", "0s", "--hostname", "a.example.com"}, ""},
+		{"101 hostnames from env", []string{"hostname", "issue", "--dry-run"}, strings.Join(hosts, ",")},
+		{"101 hostname flags", append([]string{"hostname", "issue", "--dry-run"}, hostnameArgs(hosts)...), ""},
+		{"associate without cert id", []string{"hostname", "associate", "--hostname", "a.example.com"}, ""},
+		{"invalid hostname", []string{"hostname", "status", "--hostname", "*.example.com"}, ""},
 	}
 	for _, id := range []string{".", "..", "a/b", ""} {
 		tests = append(tests,
-			usageTest{"associate cert id " + strconv.Quote(id), []string{"leaf", "associate", "--cert-id", id, "--hostname", "a.example.com"}, ""},
-			usageTest{"prune cert id " + strconv.Quote(id), []string{"leaf", "prune", "--cert-id", id, "--cert-id", "old", "--yes", "--hostname", "a.example.com"}, ""},
+			usageTest{"associate cert id " + strconv.Quote(id), []string{"hostname", "associate", "--cert-id", id, "--hostname", "a.example.com"}, ""},
+			usageTest{"prune cert id " + strconv.Quote(id), []string{"hostname", "prune", "--cert-id", id, "--cert-id", "old", "--yes", "--hostname", "a.example.com"}, ""},
 		)
 	}
 	for _, tt := range tests {
@@ -251,7 +251,7 @@ func TestHundredHostnamesAccepted(t *testing.T) {
 		hosts[i] = fmt.Sprintf("h%d.example.com", i)
 	}
 	h.env["AOP_HOSTNAMES"] = strings.Join(hosts, " ")
-	code, _, stderr := h.run("leaf", "issue", "--dry-run")
+	code, _, stderr := h.run("hostname", "issue", "--dry-run")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
