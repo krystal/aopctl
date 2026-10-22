@@ -13,10 +13,16 @@ settings or Traefik configuration. The one exception is
 `aopctl ca show --secret`, which prints the CA Secret from the plugin's
 [example 1][plugin-example-1].
 
+Per-hostname AOP with your own CA lets an origin tell Cloudflare requests for
+your hostnames apart from requests Cloudflare proxies for anyone else. The
+plugin README's [security model][plugin-security] explains why neither
+Cloudflare's IP ranges nor its shared AOP certificate can do that.
+
 `aopctl` reads secrets from environment variables, never writes a key to disk,
 and uses only the Go standard library.
 
 [plugin]: https://github.com/krystal/traefik-plugin-cloudflare-origin
+[plugin-security]: https://github.com/krystal/traefik-plugin-cloudflare-origin#security-model
 [plugin-setup]: https://github.com/krystal/traefik-plugin-cloudflare-origin#set-up-cloudflare
 [plugin-example-1]: https://github.com/krystal/traefik-plugin-cloudflare-origin#1-gate-one-service
 [plugin-pin]: https://github.com/krystal/traefik-plugin-cloudflare-origin#pin-the-ca-or-the-client-certificate
@@ -26,23 +32,8 @@ and uses only the Go standard library.
 
 ## Install
 
-Release archives cover Linux and macOS on amd64 and arm64. There are no
+Prebuilt binaries cover Linux and macOS on amd64 and arm64. There are no
 Windows builds: `leaf prune` asks for confirmation through `/dev/tty`.
-
-While this repository is private, every install method needs GitHub
-credentials that can read it.
-
-### With go install
-
-`go install` builds `aopctl` from source and needs Go 1.22 or later. While the
-repository is private, tell Go to fetch it directly instead of through the
-public module proxy, and give Git credentials for GitHub, for example with
-`gh auth setup-git`:
-
-```sh
-export GOPRIVATE=github.com/krystal/aopctl
-go install github.com/krystal/aopctl@latest
-```
 
 ### With mise
 
@@ -53,15 +44,19 @@ installs the release archive for your platform:
 mise use -g github:krystal/aopctl
 ```
 
-For a private repository, mise reads the token that `gh auth login` stores, or
-`MISE_GITHUB_TOKEN`. See mise's
-[GitHub tokens](https://mise.jdx.dev/dev-tools/github-tokens.html) page. If
-your mise configuration sets `minimum_release_age`, a new release installs
-only once it is that old, unless you add `github:krystal/aopctl` to
+If your mise configuration sets `minimum_release_age`, mise installs a new
+release only once it is that old, unless you add `github:krystal/aopctl` to
 `minimum_release_age_excludes`.
 
-To build from source through mise instead, use the `go` backend, with
-`GOPRIVATE` set as for `go install`:
+### With go install
+
+`go install` builds `aopctl` from source and needs Go 1.22 or later:
+
+```sh
+go install github.com/krystal/aopctl@latest
+```
+
+mise's `go` backend does the same through mise:
 
 ```sh
 mise use -g go:github.com/krystal/aopctl
@@ -69,25 +64,31 @@ mise use -g go:github.com/krystal/aopctl
 
 ### From a release archive
 
-Each release has a `.tar.gz` archive per platform, holding the `aopctl`
-binary, `LICENSE`, `README.md` and `CHANGELOG.md`, and a checksums file. On
-Linux amd64:
+Each [release](https://github.com/krystal/aopctl/releases) has a `.tar.gz`
+archive per platform, holding the `aopctl` binary, `LICENSE`, `README.md` and
+`CHANGELOG.md`, and a checksums file. To install a release on Linux amd64:
 
 ```sh
-gh release download --repo krystal/aopctl \
-  --pattern 'aopctl_*_linux_amd64.tar.gz' --pattern 'aopctl_*_checksums.txt'
-sha256sum --check --ignore-missing aopctl_*_checksums.txt
-tar -xzf aopctl_*_linux_amd64.tar.gz aopctl
+version=0.1.0 # the release to install, without the leading v
+base="https://github.com/krystal/aopctl/releases/download/v${version}"
+curl -fsSLO "${base}/aopctl_${version}_linux_amd64.tar.gz"
+curl -fsSLO "${base}/aopctl_${version}_checksums.txt"
+sha256sum --check --ignore-missing "aopctl_${version}_checksums.txt"
+tar -xzf "aopctl_${version}_linux_amd64.tar.gz" aopctl
 ```
 
 For other platforms, replace `linux_amd64` with `linux_arm64`, `darwin_amd64`
-or `darwin_arm64`. Then move `aopctl` to a directory on your `PATH`.
+or `darwin_arm64`. On macOS, check the checksum with `shasum -a 256 --check`
+instead of `sha256sum --check`. Then move `aopctl` to a directory on your
+`PATH`.
 
-Releases published while the repository has immutable releases turned on also
-carry a GitHub release attestation. To check an archive against it:
+Releases are GitHub
+[immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
+so GitHub publishes an attestation of each release's tag, commit and assets.
+To check a downloaded archive against it with the GitHub CLI:
 
 ```sh
-gh release verify-asset --repo krystal/aopctl <tag> aopctl_<version>_linux_amd64.tar.gz
+gh release verify-asset --repo krystal/aopctl "v${version}" "aopctl_${version}_linux_amd64.tar.gz"
 ```
 
 ### Check the version
@@ -102,9 +103,10 @@ version Go records for it, or `(devel)`.
 
 ## Configure
 
-`aopctl` contains no 1Password code, but works well with `op run`: keep
-`op://` references in an env file, and run each `leaf` command through
-`op run --env-file`.
+`aopctl` reads its configuration from environment variables, so any way of
+setting them works. It contains no 1Password code, but the examples here use
+1Password's `op run`: keep `op://` references in an env file, and run each
+`leaf` command through `op run --env-file`.
 
 ```sh
 # aop.env
@@ -298,10 +300,12 @@ If the CA key leaks, [rotate the CA][plugin-rotate-ca].
 
 ## Development
 
-Tools and tasks are managed with [mise](https://mise.jdx.dev). `mise.toml` pins
-each tool to a major version, and `mise.lock` pins the exact version and
-checksum for linux-x64, linux-arm64 and macos-arm64. mise skips tool releases
-younger than three days, and CI applies the same cooldown to the mise binary.
+Tools and tasks are managed with [mise](https://mise.jdx.dev). To work on
+`aopctl`, clone the repository and run `mise run setup`, which installs the
+tools and the pre-commit hook. `mise.toml` pins each tool to a major version,
+and `mise.lock` pins the exact version and checksum for linux-x64, linux-arm64
+and macos-arm64. mise skips tool releases younger than three days, and CI
+applies the same cooldown to the mise binary.
 
 | Task                     | What it does                                                                     |
 | ------------------------ | -------------------------------------------------------------------------------- |
@@ -342,7 +346,7 @@ For an urgent security fix inside the cooldown window, override it for that
 one change, for example `MISE_MINIMUM_RELEASE_AGE=0 mise upgrade <tool>`, and
 say so in the pull request.
 
-## Releases
+### Releases
 
 [release-please](https://github.com/googleapis/release-please) maintains a
 release pull request from the
@@ -384,9 +388,12 @@ whether the release becomes the latest release. Do not publish a draft by
 hand: with immutable releases on, a release published without its assets can
 never get them.
 
+### Release setup
+
 The Release Please job runs in the `release` environment and authenticates as
 a GitHub App, so its release pull requests trigger CI. It also starts the
-Release workflow as the App. The repository needs:
+Release workflow as the App. Releases depend on this repository
+configuration, which only maintainers can change:
 
 - a GitHub App installed on this repository with read and write access to
   actions, contents, issues and pull requests;
