@@ -55,11 +55,11 @@ func settingWrites(h *harness) int {
 }
 
 func TestZoneUsageErrors(t *testing.T) {
-	for _, id := range []string{"", "old", "settings", "hostnames", "../settings", zoneOld + "/x", strings.ToUpper(zoneOld) + "0"} {
+	for _, id := range []string{"", "old", "settings", "hostnames", "../settings", zoneOld + "/x", strings.ToUpper(zoneOld) + "0", strings.Repeat("g", 32), strings.Repeat("a", 31)} {
 		t.Run("prune cert id "+strconv.Quote(id), func(t *testing.T) {
 			h := zoneHarness(t)
 			code, stdout, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--cert-id", id, "--yes")
-			if code != 2 || !strings.Contains(stderr, "want a zone certificate ID, which is a UUID") {
+			if code != 2 || !strings.Contains(stderr, "want a zone certificate ID, a UUID or 32 hex digits") {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
 			if stdout != "" {
@@ -886,6 +886,30 @@ func TestZonePrune(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("one certificate named in two cases", func(t *testing.T) {
+		h := twoActive(t)
+		id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		h.fake.AddZoneCert(id, h.ca.issue(t), cftest.UploadedOn(0))
+		code, _, stderr := h.run("zone", "prune", "--cert-id", strings.ToUpper(id), "--cert-id", id, "--yes")
+		if code != 0 || strings.Join(deletes(h), ",") != id {
+			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
+		}
+	})
+
+	t.Run("ID without dashes", func(t *testing.T) {
+		h := twoActive(t)
+		id := strings.ReplaceAll(cftest.ZoneCertID(3), "-", "")
+		h.fake.AddZoneCert(id, h.ca.issue(t), cftest.UploadedOn(0))
+		code, stdout, stderr := h.run("zone", "status")
+		if code != 0 || !strings.Contains(stdout, "  "+id+"\n") {
+			t.Fatalf("status: exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+		}
+		code, _, stderr = h.run("zone", "prune", "--cert-id", id, "--yes")
+		if code != 0 || strings.Join(deletes(h), ",") != id {
+			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
+		}
+	})
 
 	t.Run("pending deletion is waited for", func(t *testing.T) {
 		h := twoActive(t)

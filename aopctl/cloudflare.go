@@ -407,7 +407,8 @@ func (c *cfClient) associate(ctx context.Context, certID string, hostnames []str
 // listZoneCerts returns every zone-level certificate, across all pages.
 // Cloudflare does not document paging for this list, so a repeated ID,
 // which ignored paging would cause, fails the list rather than count twice.
-// So does an ID that is not a UUID, which could not be used in a path.
+// So does an ID that ValidZoneCertID rejects, which could not be used in a
+// path.
 func (c *cfClient) listZoneCerts(ctx context.Context) ([]Certificate, error) {
 	certs, err := c.listAll(ctx, zonePath)
 	if err != nil {

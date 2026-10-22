@@ -24,7 +24,7 @@ const (
 // hostnames paths, which share its prefix.
 func validateZoneCertID(id string) error {
 	if !aopctl.ValidZoneCertID(id) {
-		return usagef("invalid --cert-id %q: want a zone certificate ID, which is a UUID", id)
+		return usagef("invalid --cert-id %q: want a zone certificate ID, a UUID or 32 hex digits", id)
 	}
 	return nil
 }
@@ -344,9 +344,9 @@ func (a *app) zoneStatus(args []string) error {
 func (a *app) zonePrune(args []string) error {
 	fs := a.flagSet("zone prune", "--cert-id ID... [flags]")
 	var idFlags stringList
-	fs.Var(&idFlags, "cert-id", "zone certificate to delete (repeatable, required)")
+	fs.Var(&idFlags, "cert-id", "zone certificate to delete (repeatable, required). While zone-level AOP is enabled, naming every active certificate keeps the newest, which may change the certificate in use")
 	yes := fs.Bool("yes", false, "delete without asking for confirmation")
-	dryRun := fs.Bool("dry-run", false, "show the plan without changing anything")
+	dryRun := fs.Bool("dry-run", false, "show the plan without changing anything, and exit 1 if it refuses or keeps a named certificate")
 	timeout := fs.Duration("timeout", defaultTimeout, "time budget for the whole command")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -354,7 +354,7 @@ func (a *app) zonePrune(args []string) error {
 	var ids []string
 	seen := map[string]bool{}
 	for _, id := range idFlags {
-		id = strings.TrimSpace(id)
+		id = strings.ToLower(strings.TrimSpace(id))
 		if err := validateZoneCertID(id); err != nil {
 			return err
 		}

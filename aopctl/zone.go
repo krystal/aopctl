@@ -9,18 +9,20 @@ import (
 	"time"
 )
 
-var zoneCertIDPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+var zoneCertIDPattern = regexp.MustCompile(`(?i)^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
 
-// ValidZoneCertID reports whether id is a UUID, as Cloudflare's zone-level
-// certificate IDs are. A zone certificate's path shares its prefix with the
-// zone's settings and hostname paths, so no other ID is used in a path.
+// ValidZoneCertID reports whether id is a UUID, with or without dashes:
+// 32 hex digits, in either case. Cloudflare's API reference shows
+// identifiers in both forms. A zone certificate's path shares its prefix
+// with the zone's settings and hostname paths, and a hex ID can name
+// neither, so no other ID is used in a path.
 func ValidZoneCertID(id string) bool {
 	return zoneCertIDPattern.MatchString(id)
 }
 
 func checkZoneCertID(id string) error {
 	if !ValidZoneCertID(id) {
-		return fmt.Errorf("invalid zone certificate ID %q: want a UUID", id)
+		return fmt.Errorf("invalid zone certificate ID %q: want a UUID or 32 hex digits", id)
 	}
 	return nil
 }

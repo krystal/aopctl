@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -12,7 +13,8 @@ import (
 type ZonePruneRequest struct {
 	// CACert must have signed each certificate.
 	CACert *x509.Certificate
-	// CertIDs must be UUIDs.
+	// CertIDs must pass ValidZoneCertID. They are lowercased, so one
+	// certificate named in two cases counts once.
 	CertIDs []string
 	// Progress, when set, receives CertificateSkipped while planning and
 	// CertificateRefused, CertificateDeleteFailed and CertificateDeleted
@@ -44,6 +46,7 @@ func (c *Client) PlanZonePrune(ctx context.Context, r ZonePruneRequest) (*ZonePr
 	}
 	var ids []string
 	for _, id := range r.CertIDs {
+		id = strings.ToLower(id)
 		if err := checkZoneCertID(id); err != nil {
 			return nil, err
 		}

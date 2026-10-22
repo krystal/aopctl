@@ -129,12 +129,27 @@ func TestZoneIssuePlan(t *testing.T) {
 
 // TestZoneCertIDsChecked checks that the library, not only the command,
 // keeps a zone certificate ID from reaching the settings or hostnames
-// paths.
+// paths, and counts one certificate named in two cases once.
 func TestZoneCertIDsChecked(t *testing.T) {
+	t.Run("case", func(t *testing.T) {
+		c, fake, ca := zoneSetup(t)
+		id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		other := newCA(t)
+		fake.AddZoneCert(id, cftest.IssueLeaf(t, other.cert, other.key), cftest.UploadedOn(2))
+		plan, err := c.PlanZonePrune(context.Background(), aopctl.ZonePruneRequest{CACert: ca.cert, CertIDs: []string{strings.ToUpper(id), id}})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		// The other CA signed the certificate, so it is skipped, once.
+		if skipped := plan.Skipped(); len(skipped) != 1 || skipped[0].CertID != id {
+			t.Errorf("skipped = %+v, want %s once", skipped, id)
+		}
+	})
+
 	for _, id := range []string{"settings", "hostnames", "../settings", ""} {
 		c, fake, ca := zoneSetup(t)
 		_, err := c.PlanZonePrune(context.Background(), aopctl.ZonePruneRequest{CACert: ca.cert, CertIDs: []string{id}})
-		if err == nil || !strings.Contains(err.Error(), "want a UUID") {
+		if err == nil || !strings.Contains(err.Error(), "want a UUID or 32 hex digits") {
 			t.Errorf("%q: err = %v, want an invalid ID", id, err)
 		}
 		if n := len(fake.Recorded()); n != 0 {
