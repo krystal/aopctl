@@ -119,13 +119,12 @@ jobs:
           private-key: ${{ secrets.RELEASE_PLEASE_GITHUB_APP_PRIVATE_KEY }}
           permission-actions: write
       # The Release workflow builds and attaches the archives, then publishes
-      # the draft. Only releases from main become the latest release, so a
-      # maintenance release from a release-*.x branch does not displace it.
+      # the draft. It runs on this branch, which decides whether the release
+      # becomes the latest release.
       - name: Start the Release workflow
         if: steps.release-please.outputs.release_created == 'true'
-        run: gh workflow run release.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG" -f latest="$LATEST"
+        run: gh workflow run release.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.release-please.outputs.tag_name }}
-          LATEST: ${{ github.ref_name == 'main' }}

@@ -70,7 +70,8 @@ mise use -g go:github.com/krystal/aopctl
 ### From a release archive
 
 Each release has a `.tar.gz` archive per platform, holding the `aopctl`
-binary, `LICENSE` and `README.md`, and a checksums file. On Linux amd64:
+binary, `LICENSE`, `README.md` and `CHANGELOG.md`, and a checksums file. On
+Linux amd64:
 
 ```sh
 gh release download --repo krystal/aopctl \
@@ -359,9 +360,9 @@ GitHub's immutable releases, whose assets cannot change after publishing:
    draft GitHub release with the changelog.
 2. The same job starts the Release workflow (`.github/workflows/release.yml`)
    for the tag, on the branch it released from.
-3. The Release workflow checks that the release is still a draft, builds the
-   archives and checksums file from the tag with GoReleaser, and uploads them
-   to the draft.
+3. The Release workflow checks that it runs on `main` or a `release-*.x`
+   branch and that the release is still a draft. It builds the archives and
+   checksums file from the tag with GoReleaser, and uploads them to the draft.
 4. It then publishes the release. Releases from `main` become the latest
    release; releases from a maintenance branch do not.
 
@@ -378,20 +379,22 @@ the workflow never started, run it from the branch the release was cut from:
 gh workflow run release.yml --repo krystal/aopctl --ref main -f tag=v0.1.0
 ```
 
-For a maintenance release, pass `--ref release-X.Y.x -f latest=false`. Do not
-publish a draft by hand: with immutable releases on, a release published
-without its assets can never get them.
+For a maintenance release, use `--ref release-X.Y.x`: the branch decides
+whether the release becomes the latest release. Do not publish a draft by
+hand: with immutable releases on, a release published without its assets can
+never get them.
 
 The Release Please job runs in the `release` environment and authenticates as
-a GitHub App, so its release pull requests trigger CI and it can start the
-Release workflow. The repository needs:
+a GitHub App, so its release pull requests trigger CI. It also starts the
+Release workflow as the App. The repository needs:
 
 - a GitHub App installed on this repository with read and write access to
   actions, contents, issues and pull requests;
 - a `release` environment with a deployment branch policy that allows only
   `main` and `release-*.x`, the App's client ID in the
-  `RELEASE_PLEASE_GITHUB_CLIENT_ID` variable, and the App's private key in the
-  `RELEASE_PLEASE_GITHUB_APP_PRIVATE_KEY` secret; and
+  `RELEASE_PLEASE_GITHUB_CLIENT_ID` variable, and the App's private key, as
+  PEM rather than Base64, in the `RELEASE_PLEASE_GITHUB_APP_PRIVATE_KEY`
+  secret; and
 - immutable releases turned on in the repository settings, or with
   `gh api --method PUT repos/krystal/aopctl/immutable-releases`.
 

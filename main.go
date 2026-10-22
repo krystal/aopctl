@@ -168,7 +168,7 @@ func (a *app) dispatch(args []string) error {
 			return cmd(args[2:])
 		}
 	}
-	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "leaf") {
+	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "leaf" || isVersion(args[0])) {
 		fmt.Fprint(a.stderr, usageText)
 		return flag.ErrHelp
 	}

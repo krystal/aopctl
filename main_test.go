@@ -467,6 +467,7 @@ func TestUsage(t *testing.T) {
 		{[]string{"leaf", "rotate"}, 2},
 		{[]string{"leaf", "status", "extra"}, 2},
 		{[]string{"leaf", "status", "--bogus"}, 2},
+		{[]string{"version", "-h"}, 0},
 		{[]string{"version", "extra"}, 2},
 	}
 	for _, tt := range tests {

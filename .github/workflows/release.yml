@@ -3,9 +3,9 @@ name: Release
 # Attaches the release archives to a draft release that release-please
 # created, then publishes it. An immutable release's assets cannot change once
 # it is published, so publishing is the last step. The Release Please job in
-# CI starts this workflow for each release it creates. Its runs keep their
-# inputs, so re-run a failed run, or run it by hand from the branch the
-# release was cut from, to finish a draft.
+# CI starts this workflow for each release it creates, on the branch it
+# released from. Its runs keep their inputs, so re-run a failed run, or run it
+# by hand from that branch, to finish a draft.
 on:
   workflow_dispatch:
     inputs:
@@ -13,10 +13,6 @@ on:
         description: Tag of the draft release, for example v0.1.0
         required: true
         type: string
-      latest:
-        description: Mark the release as the latest release (turn off for a release-*.x branch)
-        default: true
-        type: boolean
 
 permissions: {}
 
@@ -33,19 +29,21 @@ jobs:
   assets:
     name: Release assets
     runs-on: ubuntu-latest
-    # Runs the workflow as reviewed on a release branch. This is only a
-    # filter: anyone who can push a branch can edit it.
-    if: >-
-      github.ref_name == 'main' || (
-        startsWith(github.ref_name, 'release-') &&
-        endsWith(github.ref_name, '.x')
-      )
     permissions:
       contents: write
     env:
       TAG: ${{ inputs.tag }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # Runs the workflow as reviewed on a release branch, and fails rather
+      # than skips elsewhere so a manual run cannot look like it succeeded.
+      # This is only a check: anyone who can push a branch can edit it.
+      - name: Check the branch
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "main" && "$GITHUB_REF_NAME" != release-*.x ]]; then
+            echo "::error::Run this workflow from main or the release-*.x branch the release was cut from."
+            exit 1
+          fi
       - name: Check that the release is a draft
         run: |
           is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
@@ -76,8 +74,10 @@ jobs:
         run: gh release upload "$TAG" dist/*.tar.gz dist/*_checksums.txt --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+      # Only releases from main become the latest release, so a maintenance
+      # release from a release-*.x branch does not displace it.
       - name: Publish the release
         run: gh release edit "$TAG" --draft=false --verify-tag --latest="$LATEST"
         env:
           GH_TOKEN: ${{ github.token }}
-          LATEST: ${{ inputs.latest }}
+          LATEST: ${{ github.ref_name == 'main' }}
