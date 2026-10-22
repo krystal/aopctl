@@ -477,8 +477,9 @@ func TestMounted(t *testing.T) {
 	})
 }
 
-// TestMountedReuse runs one mounted command tree more than once, as a host
-// may.
+// TestMountedReuse runs one mounted command tree more than once to check
+// that a run leaves no state behind in the commands. Flags still keep their
+// values, so hosts build a new tree for each run.
 func TestMountedReuse(t *testing.T) {
 	h := newHarness(t)
 	host := &cobra.Command{Use: "othertool"}

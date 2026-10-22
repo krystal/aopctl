@@ -62,7 +62,12 @@ type Options struct {
 // mount aopctl as a subcommand: its printed commands then start with the
 // full command path, its errors print with an "aopctl:" prefix unless the
 // root command silences them, and ExitCode maps the error Execute returns
-// to aopctl's exit status.
+// to aopctl's exit status. The help and completion commands are then the
+// other command's.
+//
+// Build a new command for each Execute, as cobra keeps flag values between
+// runs. To run aopctl as a program, use Run, which also adds the help and
+// completion commands with aopctl's usage errors.
 func NewCommand(opts Options) *cobra.Command {
 	return newRootCmd(newApp(opts))
 }

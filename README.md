@@ -456,7 +456,9 @@ and `cli.ExitCode` maps them to `aopctl`'s exit status: 0, 1, or 2 for usage
 errors. A command group run without a subcommand, such as
 `othertool aopctl hostname`, prints its help and then such an error.
 `cli.Options` can set the version and supply the environment variables
-from elsewhere than the process environment.
+from elsewhere than the process environment. Build a new command with
+`cli.NewCommand` for each run, because cobra keeps flag values such as
+`--yes` between runs.
 
 ## Use as a Go library
 
