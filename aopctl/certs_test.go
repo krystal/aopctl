@@ -6,6 +6,9 @@ import (
 	"crypto/x509"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testCA struct {
@@ -16,9 +19,7 @@ type testCA struct {
 func newTestCA(t *testing.T, days int) *testCA {
 	t.Helper()
 	cert, key, err := createCA("Test AOP CA", KeyTypeECP256, days, time.Now())
-	if err != nil {
-		t.Fatalf("create CA: %v", err)
-	}
+	require.NoError(t, err, "create CA")
 	return &testCA{cert: cert, key: key}
 }
 
@@ -26,42 +27,24 @@ func TestLeafProfileAndChain(t *testing.T) {
 	ca := newTestCA(t, 3650)
 	now := time.Now()
 	leaf, key, err := createLeaf(ca.cert, ca.key, "aopctl AOP client", KeyTypeECP256, 365, now)
-	if err != nil {
-		t.Fatalf("createLeaf: %v", err)
-	}
-	if !leaf.BasicConstraintsValid || leaf.IsCA {
-		t.Error("leaf is not CA:FALSE")
-	}
-	if leaf.KeyUsage != x509.KeyUsageDigitalSignature {
-		t.Errorf("KeyUsage = %b, want DigitalSignature", leaf.KeyUsage)
-	}
-	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth || len(leaf.UnknownExtKeyUsage) != 0 {
-		t.Errorf("EKU = %v %v, want [ClientAuth]", leaf.ExtKeyUsage, leaf.UnknownExtKeyUsage)
-	}
-	if len(leaf.DNSNames)+len(leaf.IPAddresses)+len(leaf.URIs)+len(leaf.EmailAddresses) != 0 {
-		t.Error("leaf has a SAN")
-	}
-	if !keyMatchesCert(leaf, key) {
-		t.Error("leaf key does not match the leaf")
-	}
-	if err := verifyLeaf(leaf, ca.cert, now); err != nil {
-		t.Errorf("client auth verify: %v", err)
-	}
+	require.NoError(t, err, "createLeaf")
+	assert.True(t, leaf.BasicConstraintsValid, "leaf is not CA:FALSE")
+	assert.False(t, leaf.IsCA, "leaf is not CA:FALSE")
+	assert.Equal(t, x509.KeyUsageDigitalSignature, leaf.KeyUsage, "KeyUsage")
+	assert.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, leaf.ExtKeyUsage, "EKU")
+	assert.Empty(t, leaf.UnknownExtKeyUsage, "unknown EKU")
+	assert.Zero(t, len(leaf.DNSNames)+len(leaf.IPAddresses)+len(leaf.URIs)+len(leaf.EmailAddresses), "leaf has a SAN")
+	assert.True(t, keyMatchesCert(leaf, key), "leaf key does not match the leaf")
+	assert.NoError(t, verifyLeaf(leaf, ca.cert, now), "client auth verify")
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.cert)
 	_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
-	if err == nil {
-		t.Error("server auth verify passed, want failure")
-	}
+	assert.Error(t, err, "server auth verify passed")
 
 	rsaLeaf, rsaKey, err := createLeaf(ca.cert, ca.key, "rsa", KeyTypeRSA3072, 30, now)
-	if err != nil {
-		t.Fatalf("createLeaf rsa: %v", err)
+	require.NoError(t, err, "createLeaf rsa")
+	if k, ok := rsaKey.(*rsa.PrivateKey); assert.True(t, ok, "rsa leaf key = %T", rsaKey) {
+		assert.Equal(t, 3072, k.N.BitLen(), "rsa leaf key bits")
 	}
-	if k, ok := rsaKey.(*rsa.PrivateKey); !ok || k.N.BitLen() != 3072 {
-		t.Errorf("rsa leaf key = %T", rsaKey)
-	}
-	if err := verifyLeaf(rsaLeaf, ca.cert, now); err != nil {
-		t.Errorf("rsa leaf verify: %v", err)
-	}
+	assert.NoError(t, verifyLeaf(rsaLeaf, ca.cert, now), "rsa leaf verify")
 }

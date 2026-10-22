@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/krystal/aopctl/aopctl"
 )
 
@@ -44,9 +47,7 @@ type item struct {
 func parseItem(t *testing.T, stdout string) (item, map[string]itemField) {
 	t.Helper()
 	var it item
-	if err := json.Unmarshal([]byte(stdout), &it); err != nil {
-		t.Fatalf("stdout is not JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &it), "stdout is not JSON")
 	fields := map[string]itemField{}
 	for _, f := range it.Fields {
 		fields[f.ID] = f
@@ -60,9 +61,7 @@ func parseItemPair(t *testing.T, stdout string) (*x509.Certificate, crypto.Signe
 	t.Helper()
 	_, fields := parseItem(t, stdout)
 	cert, key, err := loadCA(fields["ca_cert"].Value, fields["ca_key"].Value)
-	if err != nil {
-		t.Fatalf("item template pair: %v", err)
-	}
+	require.NoError(t, err, "item template pair")
 	return cert, key
 }
 
@@ -70,27 +69,18 @@ func TestCACreateRefusesTerminal(t *testing.T) {
 	h := newHarness(t)
 	h.stdoutTTY = true
 	code, stdout, stderr := h.run("ca", "create")
-	if code != 1 {
-		t.Fatalf("exit %d, want 1; stderr:\n%s", code, stderr)
-	}
-	if stdout != "" {
-		t.Errorf("wrote %d bytes to the terminal", len(stdout))
-	}
-	if !strings.Contains(stderr, "op item create") {
-		t.Errorf("stderr does not explain how to pipe the output:\n%s", stderr)
-	}
+	require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+	assert.Empty(t, stdout, "wrote to the terminal")
+	assert.Contains(t, stderr, "op item create", "stderr does not explain how to pipe the output")
 }
 
 func TestCACreateOutput(t *testing.T) {
 	h := newHarness(t)
 	code, stdout, stderr := h.run("ca", "create", "--name", "Example AOP CA")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	it, fields := parseItem(t, stdout)
-	if it.Category != "SECURE_NOTE" || it.Title != "Example AOP CA" {
-		t.Errorf("category %q, title %q", it.Category, it.Title)
-	}
+	assert.Equal(t, "SECURE_NOTE", it.Category, "category")
+	assert.Equal(t, "Example AOP CA", it.Title, "title")
 	wantTypes := map[string]string{
 		"ca_cert":            "STRING",
 		"ca_key":             "CONCEALED",
@@ -98,33 +88,24 @@ func TestCACreateOutput(t *testing.T) {
 		"notesPlain":         "STRING",
 	}
 	for id, typ := range wantTypes {
-		if f, ok := fields[id]; !ok || f.Type != typ || f.Label != id {
-			t.Errorf("field %s = %+v, want type %s", id, f, typ)
+		if f, ok := fields[id]; assert.True(t, ok, "field %s is missing", id) {
+			assert.Equal(t, typ, f.Type, "field %s type", id)
+			assert.Equal(t, id, f.Label, "field %s label", id)
 		}
 	}
-	if fields["notesPlain"].Purpose != "NOTES" || !strings.Contains(fields["notesPlain"].Value, "Expires") {
-		t.Errorf("notesPlain = %+v", fields["notesPlain"])
-	}
+	assert.Equal(t, "NOTES", fields["notesPlain"].Purpose, "notesPlain purpose")
+	assert.Contains(t, fields["notesPlain"].Value, "Expires", "notesPlain value")
 
 	cert, _ := parseItemPair(t, stdout)
 	fp := aopctl.Fingerprint(cert)
-	if fields["fingerprint_sha256"].Value != fp {
-		t.Errorf("fingerprint field %q, want %q", fields["fingerprint_sha256"].Value, fp)
-	}
-	if !strings.Contains(stderr, fp) {
-		t.Errorf("stderr does not show the fingerprint:\n%s", stderr)
-	}
-	if strings.Contains(stderr, "PRIVATE KEY") {
-		t.Error("stderr contains the key")
-	}
+	assert.Equal(t, fp, fields["fingerprint_sha256"].Value, "fingerprint field")
+	assert.Contains(t, stderr, fp, "stderr does not show the fingerprint")
+	assert.NotContains(t, stderr, "PRIVATE KEY", "stderr contains the key")
 
 	code, stdout, stderr = h.run("ca", "create", "--name", "Example AOP CA", "--title", "Example item")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
-	if it, _ := parseItem(t, stdout); it.Title != "Example item" {
-		t.Errorf("title %q, want the --title value", it.Title)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	it, _ = parseItem(t, stdout)
+	assert.Equal(t, "Example item", it.Title, "title, want the --title value")
 }
 
 func TestCAShow(t *testing.T) {
@@ -132,9 +113,7 @@ func TestCAShow(t *testing.T) {
 		h := newHarness(t)
 		h.stdin = "\n  " + vectorCA + "\n\n"
 		code, stdout, stderr := h.run("ca", "show")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
 			"Fingerprint: " + vectorFingerprint,
 			"Subject:     CN=Example AOP CA",
@@ -142,51 +121,35 @@ func TestCAShow(t *testing.T) {
 			"Not after:   2036-01-01T00:00:00Z",
 			"Key type:    ECDSA P-256",
 		} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
-		if strings.Contains(stdout, "Warning") {
-			t.Errorf("unexpected warning:\n%s", stdout)
-		}
+		assert.NotContains(t, stdout, "Warning", "unexpected warning")
 	})
 
 	t.Run("secret", func(t *testing.T) {
 		h := newHarness(t)
 		h.stdin = vectorCA
 		code, stdout, stderr := h.run("ca", "show", "--secret", "cloudflare-aop-ca", "--namespace", "app")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		header := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: cloudflare-aop-ca\n  namespace: app\ntype: Opaque\nstringData:\n  ca.crt: |\n"
 		body, ok := strings.CutPrefix(stdout, header)
-		if !ok {
-			t.Fatalf("manifest header mismatch:\n%s", stdout)
-		}
+		require.True(t, ok, "manifest header mismatch:\n%s", stdout)
 		var pemLines []string
 		for line := range strings.SplitSeq(strings.TrimRight(body, "\n"), "\n") {
 			pemLines = append(pemLines, strings.TrimPrefix(line, "    "))
 		}
 		cert, err := aopctl.ParseCertificatePEM(strings.Join(pemLines, "\n"))
-		if err != nil {
-			t.Fatalf("manifest certificate: %v", err)
-		}
-		if aopctl.Fingerprint(cert) != vectorFingerprint {
-			t.Error("manifest holds a different certificate")
-		}
+		require.NoError(t, err, "manifest certificate")
+		assert.Equal(t, vectorFingerprint, aopctl.Fingerprint(cert), "manifest holds a different certificate")
 	})
 
 	t.Run("profile warning", func(t *testing.T) {
 		h := newHarness(t)
 		h.stdin = h.ca.issue(t)
 		code, stdout, stderr := h.run("ca", "show")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{"Warning:     not a CA certificate", "Warning:     has an extended key usage"} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
 	})
 
@@ -194,16 +157,14 @@ func TestCAShow(t *testing.T) {
 		h := newHarness(t)
 		h.stdinTTY = true
 		code, _, stderr := h.run("ca", "show")
-		if code != 1 || !strings.Contains(stderr, "stdin") {
-			t.Errorf("exit %d, stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "stdin")
 	})
 
 	t.Run("namespace without secret", func(t *testing.T) {
 		h := newHarness(t)
 		h.stdin = vectorCA
-		if code, _, _ := h.run("ca", "show", "--namespace", "app"); code != 2 {
-			t.Errorf("exit %d, want 2", code)
-		}
+		code, _, _ := h.run("ca", "show", "--namespace", "app")
+		assert.Equal(t, 2, code, "exit code")
 	})
 }

@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/krystal/aopctl/aopctl"
 	"github.com/krystal/aopctl/internal/cftest"
 )
@@ -35,7 +38,7 @@ func zoneHarness(t *testing.T) *harness {
 func noPrompt(t *testing.T, h *harness) {
 	t.Helper()
 	h.openTTY = func() (io.ReadWriteCloser, error) {
-		t.Error("opened the terminal to confirm")
+		assert.Fail(t, "opened the terminal to confirm")
 		return nil, io.EOF
 	}
 }
@@ -59,29 +62,23 @@ func TestZoneUsageErrors(t *testing.T) {
 		t.Run("prune cert id "+strconv.Quote(id), func(t *testing.T) {
 			h := zoneHarness(t)
 			code, stdout, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--cert-id", id, "--yes")
-			if code != 2 || !strings.Contains(stderr, "want a zone certificate ID, a UUID or 32 hex digits") {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-			if n := len(h.fake.Recorded()); n != 0 {
-				t.Errorf("sent %d requests, want none", n)
-			}
+			assert.Equal(t, 2, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "want a zone certificate ID, a UUID or 32 hex digits")
+			assert.Empty(t, stdout, "stdout")
+			assert.Empty(t, h.fake.Recorded(), "requests sent")
 		})
 	}
 	t.Run("prune without cert id", func(t *testing.T) {
 		h := zoneHarness(t)
 		code, _, stderr := h.run("zone", "prune")
-		if code != 2 || !strings.Contains(stderr, "aopctl zone status") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 2, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "aopctl zone status")
 	})
 	t.Run("help", func(t *testing.T) {
 		h := zoneHarness(t)
-		if code, stdout, stderr := h.run("zone", "-h"); code != 0 || !strings.Contains(stdout, "Turn on zone-level AOP") {
-			t.Errorf("exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
+		code, stdout, stderr := h.run("zone", "-h")
+		assert.Equal(t, 0, code, "exit code; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stdout, "Turn on zone-level AOP")
 	})
 }
 
@@ -89,9 +86,7 @@ func TestZoneIssue(t *testing.T) {
 	h := zoneHarness(t)
 	noPrompt(t, h)
 	code, stdout, stderr := h.run("zone", "issue")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	reqs := h.fake.Recorded()
 
 	var upload struct {
@@ -100,50 +95,32 @@ func TestZoneIssue(t *testing.T) {
 	}
 	for _, r := range reqs {
 		if r.Method == http.MethodPost {
-			if !strings.HasSuffix(r.Path, "/zones/"+cftest.Zone+"/origin_tls_client_auth") {
-				t.Errorf("uploaded to %s", r.Path)
-			}
-			if err := json.Unmarshal(r.Body, &upload); err != nil {
-				t.Fatalf("upload body: %v", err)
-			}
+			assert.True(t, strings.HasSuffix(r.Path, "/zones/"+cftest.Zone+"/origin_tls_client_auth"), "uploaded to %s", r.Path)
+			require.NoError(t, json.Unmarshal(r.Body, &upload), "upload body")
 		}
 	}
 	leaf, err := aopctl.ParseCertificatePEM(upload.Certificate)
-	if err != nil {
-		t.Fatalf("uploaded certificate: %v", err)
-	}
-	if err := cftest.VerifyClientAuth(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)); err != nil {
-		t.Errorf("uploaded leaf does not verify for client auth: %v", err)
-	}
+	require.NoError(t, err, "uploaded certificate")
+	assert.NoError(t, cftest.VerifyClientAuth(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)), "uploaded leaf does not verify for client auth")
 	key, err := aopctl.ParsePrivateKeyPEM(upload.PrivateKey)
-	if err != nil || !cftest.KeyMatches(leaf, key) {
-		t.Errorf("uploaded key does not match the leaf: %v", err)
+	if assert.NoError(t, err, "uploaded key") {
+		assert.True(t, cftest.KeyMatches(leaf, key), "uploaded key does not match the leaf")
 	}
-	if strings.Contains(stdout+stderr, strings.Split(upload.PrivateKey, "\n")[1]) {
-		t.Error("output contains the leaf key")
-	}
-	if n := countIn(reqs, http.MethodGet, "/origin_tls_client_auth/"+zoneNew); n < 2 {
-		t.Errorf("polled the new certificate %d times, want it polled to active", n)
-	}
-	if w := h.fake.Writes(); len(w) != 1 {
-		t.Errorf("sent %d writes, want only the upload: %+v", len(w), w)
-	}
+	assert.NotContains(t, stdout+stderr, strings.Split(upload.PrivateKey, "\n")[1], "output contains the leaf key")
+	assert.GreaterOrEqual(t, countIn(reqs, http.MethodGet, "/origin_tls_client_auth/"+zoneNew), 2, "polls of the new certificate, want it polled to active")
+	assert.Len(t, h.fake.Writes(), 1, "writes, want only the upload")
 	for _, want := range []string{
 		"Zone-level AOP: enabled",
 		"In use: " + zoneOld + " (derived: the newest active certificate)",
 	} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr)
-		}
+		assert.Contains(t, stderr, want)
 	}
 	for _, want := range []string{
 		"Certificate " + zoneNew + " is active",
 		"Cloudflare no longer uses: " + zoneOld,
 		"  aopctl zone prune --cert-id " + zoneOld + "\n",
 	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout)
-		}
+		assert.Contains(t, stdout, want)
 	}
 }
 
@@ -163,24 +140,19 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		h := otherInUse(t)
 		tty := answer(h, "n\n")
 		code, _, stderr := h.run("zone", "issue")
-		if !strings.Contains(tty.prompt.String(), "[y/N]") {
-			t.Errorf("prompt = %q", tty.prompt.String())
-		}
-		if code != 1 || !strings.Contains(stderr, "aborted: nothing uploaded") || !strings.Contains(stderr, "Warning: AOP_CA_CERT did not sign the certificate in use") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := zoneUploads(h); n != 0 {
-			t.Errorf("sent %d uploads after the prompt was declined", n)
-		}
+		assert.Contains(t, tty.prompt.String(), "[y/N]", "prompt")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "aborted: nothing uploaded")
+		assert.Contains(t, stderr, "Warning: AOP_CA_CERT did not sign the certificate in use")
+		assert.Zero(t, zoneUploads(h), "uploads after the prompt was declined")
 	})
 
 	t.Run("other CA in use, confirmed", func(t *testing.T) {
 		h := otherInUse(t)
 		answer(h, "y\n")
 		code, stdout, stderr := h.run("zone", "issue")
-		if code != 0 || zoneUploads(h) != 1 {
-			t.Fatalf("exit %d, %d uploads; stderr:\n%s", code, zoneUploads(h), stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		require.Equal(t, 1, zoneUploads(h), "uploads")
 		// Both previously active certificates get prune hints, with the
 		// other CA's marked.
 		for _, want := range []string{
@@ -188,38 +160,34 @@ func TestZoneIssueConfirmation(t *testing.T) {
 			"AOP_CA_CERT did not sign " + zoneTwo,
 			"  aopctl zone prune --cert-id " + zoneTwo + "\n",
 		} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
 	})
 
 	t.Run("other CA in use, no terminal", func(t *testing.T) {
 		h := otherInUse(t)
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "--yes") || zoneUploads(h) != 0 {
-			t.Errorf("exit %d, %d uploads; stderr:\n%s", code, zoneUploads(h), stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "--yes")
+		assert.Zero(t, zoneUploads(h), "uploads")
 	})
 
 	t.Run("other CA in use, yes", func(t *testing.T) {
 		h := otherInUse(t)
 		noPrompt(t, h)
-		if code, _, stderr := h.run("zone", "issue", "--yes"); code != 0 || zoneUploads(h) != 1 {
-			t.Errorf("exit %d, %d uploads; stderr:\n%s", code, zoneUploads(h), stderr)
-		}
+		code, _, stderr := h.run("zone", "issue", "--yes")
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, 1, zoneUploads(h), "uploads")
 	})
 
 	t.Run("other CA in use, dry run", func(t *testing.T) {
 		h := otherInUse(t)
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "issue", "--dry-run")
-		if code != 0 || !strings.Contains(stderr, "Dry run: nothing changed.") || !strings.Contains(stderr, "In use: "+zoneTwo) {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("dry run sent %d writes", len(w))
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Dry run: nothing changed.")
+		assert.Contains(t, stderr, "In use: "+zoneTwo)
+		assert.Empty(t, h.fake.Writes(), "dry run writes")
 	})
 
 	t.Run("other CA active but older", func(t *testing.T) {
@@ -230,9 +198,9 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		h.fake.AddZoneCert(zoneTwo, newTestCA(t, 3650).issue(t), cftest.UploadedOn(1))
 		h.fake.AddZoneCert(zoneOld, h.ca.issue(t), cftest.UploadedOn(2))
 		noPrompt(t, h)
-		if code, _, stderr := h.run("zone", "issue"); code != 0 || zoneUploads(h) != 1 {
-			t.Errorf("exit %d, %d uploads; stderr:\n%s", code, zoneUploads(h), stderr)
-		}
+		code, _, stderr := h.run("zone", "issue")
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, 1, zoneUploads(h), "uploads")
 	})
 
 	t.Run("in use cannot be derived", func(t *testing.T) {
@@ -240,12 +208,10 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(1))
 		tty := answer(h, "n\n")
 		code, _, stderr := h.run("zone", "issue")
-		if !strings.Contains(tty.prompt.String(), "[y/N]") || code != 1 || zoneUploads(h) != 0 {
-			t.Errorf("exit %d, prompt %q; stderr:\n%s", code, tty.prompt.String(), stderr)
-		}
-		if !strings.Contains(stderr, "In use: unknown") {
-			t.Errorf("stderr lacks the unknown in-use certificate:\n%s", stderr)
-		}
+		assert.Contains(t, tty.prompt.String(), "[y/N]", "prompt")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Zero(t, zoneUploads(h), "uploads")
+		assert.Contains(t, stderr, "In use: unknown", "stderr lacks the unknown in-use certificate")
 	})
 
 	t.Run("other CA, setting disabled", func(t *testing.T) {
@@ -253,15 +219,13 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		h.fake.ZoneEnabled = false
 		noPrompt(t, h)
 		code, stdout, stderr := h.run("zone", "issue")
-		if code != 0 || zoneUploads(h) != 1 {
-			t.Fatalf("exit %d, %d uploads; stderr:\n%s", code, zoneUploads(h), stderr)
-		}
-		if !strings.Contains(stdout, "Zone-level AOP is disabled") || !strings.Contains(stdout, "  aopctl zone enable\n") || strings.Contains(stdout, "zone prune") {
-			t.Errorf("stdout:\n%s", stdout)
-		}
-		if settingWrites(h) != 0 || len(deletes(h)) != 0 {
-			t.Errorf("changed the setting or deleted a certificate")
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		require.Equal(t, 1, zoneUploads(h), "uploads")
+		assert.Contains(t, stdout, "Zone-level AOP is disabled")
+		assert.Contains(t, stdout, "  aopctl zone enable\n")
+		assert.NotContains(t, stdout, "zone prune")
+		assert.Zero(t, settingWrites(h), "setting writes")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("no certificate yet", func(t *testing.T) {
@@ -269,9 +233,8 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		h.fake.ZoneEnabled = true
 		noPrompt(t, h)
 		code, stdout, stderr := h.run("zone", "issue")
-		if code != 0 || !strings.Contains(stdout, "No other zone certificate was active.") {
-			t.Errorf("exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stdout, "No other zone certificate was active.")
 	})
 }
 
@@ -288,12 +251,11 @@ func TestZoneIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "run aopctl zone status before retrying") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if zoneUploads(h) != 1 || len(h.fake.Writes()) != 1 {
-			t.Errorf("sent %d uploads and %d writes, want one upload only", zoneUploads(h), len(h.fake.Writes()))
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload outcome unknown")
+		assert.Contains(t, stderr, "run aopctl zone status before retrying")
+		assert.Equal(t, 1, zoneUploads(h), "uploads")
+		assert.Len(t, h.fake.Writes(), 1, "writes, want one upload only")
 	})
 
 	t.Run("upload response with an invalid ID", func(t *testing.T) {
@@ -306,12 +268,9 @@ func TestZoneIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown: the response has an invalid certificate ID") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/settings"); n != 1 {
-			t.Errorf("read the settings path %d times, want only the plan's read", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload outcome unknown: the response has an invalid certificate ID")
+		assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/settings"), "reads of the settings path, want only the plan's read")
 	})
 
 	t.Run("upload rejected", func(t *testing.T) {
@@ -324,41 +283,32 @@ func TestZoneIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload failed") || strings.Contains(stderr, "outcome unknown") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload failed")
+		assert.NotContains(t, stderr, "outcome unknown")
 	})
 
 	t.Run("deployment timed out", func(t *testing.T) {
 		h := zoneHarness(t)
 		h.fake.UploadStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "certificate "+zoneNew+" is deployment_timed_out") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "certificate "+zoneNew+" is deployment_timed_out")
 		for _, want := range []string{
 			"New certificate " + zoneNew + " did not become active.",
 			"Cloudflare uses it if it becomes active later",
 			"  aopctl zone prune --cert-id " + zoneNew + "\n",
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
-		if len(deletes(h)) != 0 || settingWrites(h) != 0 {
-			t.Error("deleted a certificate or changed the setting")
-		}
+		assert.Empty(t, deletes(h), "deleted")
+		assert.Zero(t, settingWrites(h), "setting writes")
 
 		prune := commandLines(stderr, "aopctl zone prune --cert-id "+zoneNew)
-		if len(prune) != 1 {
-			t.Fatalf("want one prune command, got %q", prune)
-		}
-		if code, _, stderr := h.run(append(prune[0], "--yes")...); code != 0 {
-			t.Fatalf("prune: exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != zoneNew {
-			t.Errorf("deleted %v, want %s", d, zoneNew)
-		}
+		require.Len(t, prune, 1, "prune commands")
+		code, _, stderr = h.run(append(prune[0], "--yes")...)
+		require.Equal(t, 0, code, "prune: exit code; stderr:\n%s", stderr)
+		assert.Equal(t, zoneNew, strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("never active", func(t *testing.T) {
@@ -367,12 +317,10 @@ func TestZoneIssueFailures(t *testing.T) {
 		h.fake.UploadStatuses = []string{"pending_deployment"}
 		h.waitLimit = 3
 		code, _, stderr := h.run("zone", "issue")
-		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate "+zoneNew+" to become active: last status pending_deployment") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if strings.Contains(stderr, "Cloudflare uses it") || !strings.Contains(stderr, "aopctl zone prune --cert-id "+zoneNew) {
-			t.Errorf("stderr:\n%s", stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "timed out waiting for certificate "+zoneNew+" to become active: last status pending_deployment")
+		assert.NotContains(t, stderr, "Cloudflare uses it")
+		assert.Contains(t, stderr, "aopctl zone prune --cert-id "+zoneNew)
 	})
 
 	t.Run("polling recovers from a server error", func(t *testing.T) {
@@ -386,9 +334,9 @@ func TestZoneIssueFailures(t *testing.T) {
 			cftest.WriteAPIError(w, http.StatusServiceUnavailable, 1000, "unavailable")
 			return true
 		}
-		if code, _, stderr := h.run("zone", "issue"); code != 0 || !failed {
-			t.Errorf("exit %d, failed a poll: %v; stderr:\n%s", code, failed, stderr)
-		}
+		code, _, stderr := h.run("zone", "issue")
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.True(t, failed, "failed a poll")
 	})
 }
 
@@ -425,12 +373,9 @@ func TestZoneEnable(t *testing.T) {
 			tt.setup(t, h)
 			noPrompt(t, h)
 			code, _, stderr := h.run("zone", "enable", "--yes")
-			if code != 1 || !strings.Contains(stderr, tt.want) {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if w := h.fake.Writes(); len(w) != 0 {
-				t.Errorf("sent %d writes", len(w))
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, tt.want)
+			assert.Empty(t, h.fake.Writes(), "writes")
 		})
 	}
 
@@ -440,12 +385,9 @@ func TestZoneEnable(t *testing.T) {
 		h.fake.AddZoneCert(zoneTwo, newTestCA(t, 3650).issue(t), cftest.UploadedOn(2))
 		noPrompt(t, h)
 		code, stdout, stderr := h.run("zone", "enable")
-		if code != 0 || !strings.Contains(stdout, "Zone-level AOP is already enabled. Nothing changed.") {
-			t.Errorf("exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d writes", len(w))
-		}
+		assert.Equal(t, 0, code, "exit code; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stdout, "Zone-level AOP is already enabled. Nothing changed.")
+		assert.Empty(t, h.fake.Writes(), "writes")
 	})
 
 	t.Run("enables", func(t *testing.T) {
@@ -453,54 +395,48 @@ func TestZoneEnable(t *testing.T) {
 		h.fake.AddZoneCert(zoneTwo, newTestCA(t, 3650).issue(t), cftest.UploadedOn(0))
 		tty := answer(h, "y\n")
 		code, stdout, stderr := h.run("zone", "enable")
-		if code != 0 || !h.fake.ZoneEnabled {
-			t.Fatalf("exit %d, enabled %v; stderr:\n%s", code, h.fake.ZoneEnabled, stderr)
-		}
-		if !strings.Contains(tty.prompt.String(), "Enable zone-level AOP? [y/N]") {
-			t.Errorf("prompt = %q", tty.prompt.String())
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		require.True(t, h.fake.ZoneEnabled, "enabled")
+		assert.Contains(t, tty.prompt.String(), "Enable zone-level AOP? [y/N]", "prompt")
 		writes := h.fake.Writes()
-		if len(writes) != 1 || writes[0].Method != http.MethodPut || !strings.HasSuffix(writes[0].Path, "/origin_tls_client_auth/settings") || string(writes[0].Body) != `{"enabled":true}` {
-			t.Fatalf("writes = %+v, want one PUT of {\"enabled\":true} to the settings", writes)
-		}
-		if n := countIn(requestsAfter(h.fake.Recorded(), http.MethodPut, "/settings"), http.MethodGet, "/settings"); n != 1 {
-			t.Errorf("read the setting back %d times, want 1", n)
-		}
-		if n := h.fake.Count(http.MethodGet, "/zones/"+cftest.Zone+"/settings/tls_client_auth"); n != 0 {
-			t.Errorf("read the global AOP setting %d times", n)
-		}
+		require.Len(t, writes, 1, "writes, want one PUT of {\"enabled\":true} to the settings")
+		require.Equal(t, http.MethodPut, writes[0].Method, "write method")
+		require.True(t, strings.HasSuffix(writes[0].Path, "/origin_tls_client_auth/settings"), "write path %s", writes[0].Path)
+		require.Equal(t, `{"enabled":true}`, string(writes[0].Body), "write body")
+		assert.Equal(t, 1, countIn(requestsAfter(h.fake.Recorded(), http.MethodPut, "/settings"), http.MethodGet, "/settings"), "reads of the setting back")
+		assert.Zero(t, h.fake.Count(http.MethodGet, "/zones/"+cftest.Zone+"/settings/tls_client_auth"), "reads of the global AOP setting")
 		for _, want := range []string{
 			"Cloudflare presents certificate " + zoneOld,
 			"PUT /zones/{zone}/origin_tls_client_auth/settings\n  {\"enabled\":false}",
 		} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
 	})
 
 	t.Run("declined", func(t *testing.T) {
 		h := disabledHarness(t)
 		answer(h, "n\n")
-		if code, _, stderr := h.run("zone", "enable"); code != 1 || settingWrites(h) != 0 || h.fake.ZoneEnabled {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		code, _, stderr := h.run("zone", "enable")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Zero(t, settingWrites(h), "setting writes")
+		assert.False(t, h.fake.ZoneEnabled, "enabled")
 	})
 
 	t.Run("no terminal", func(t *testing.T) {
 		h := disabledHarness(t)
-		if code, _, stderr := h.run("zone", "enable"); code != 1 || !strings.Contains(stderr, "--yes") || settingWrites(h) != 0 {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		code, _, stderr := h.run("zone", "enable")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "--yes")
+		assert.Zero(t, settingWrites(h), "setting writes")
 	})
 
 	t.Run("dry run", func(t *testing.T) {
 		h := disabledHarness(t)
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "enable", "--dry-run")
-		if code != 0 || !strings.Contains(stderr, "Dry run: nothing changed.") || len(h.fake.Writes()) != 0 {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Dry run: nothing changed.")
+		assert.Empty(t, h.fake.Writes(), "writes")
 	})
 
 	t.Run("newest changes before the change", func(t *testing.T) {
@@ -517,9 +453,9 @@ func TestZoneEnable(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("zone", "enable", "--yes")
-		if code != 1 || !strings.Contains(stderr, "certificate "+zoneTwo+" is not signed by AOP_CA_CERT") || settingWrites(h) != 0 {
-			t.Errorf("exit %d, %d setting writes; stderr:\n%s", code, settingWrites(h), stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "certificate "+zoneTwo+" is not signed by AOP_CA_CERT")
+		assert.Zero(t, settingWrites(h), "setting writes")
 	})
 
 	for _, tt := range []struct {
@@ -546,9 +482,9 @@ func TestZoneEnable(t *testing.T) {
 			}
 			code, _, stderr := h.run("zone", "enable", "--yes")
 			unknown := strings.Contains(stderr, "zone-level AOP may now be enabled") && strings.Contains(stderr, "check it with aopctl zone status before retrying")
-			if code != 1 || unknown != tt.unknown || !strings.Contains(stderr, "enable zone-level AOP: PUT") {
-				t.Errorf("exit %d, reported an unknown outcome: %v, want %v; stderr:\n%s", code, unknown, tt.unknown, stderr)
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Equal(t, tt.unknown, unknown, "reported an unknown outcome; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "enable zone-level AOP: PUT")
 		})
 	}
 
@@ -562,9 +498,9 @@ func TestZoneEnable(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "enable", "--yes")
-		if code != 1 || !strings.Contains(stderr, "zone-level AOP may now be enabled: read zone-level AOP setting back") || !strings.Contains(stderr, "aopctl zone status") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "zone-level AOP may now be enabled: read zone-level AOP setting back")
+		assert.Contains(t, stderr, "aopctl zone status")
 	})
 
 	t.Run("setting reads back disabled", func(t *testing.T) {
@@ -577,9 +513,8 @@ func TestZoneEnable(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "enable", "--yes")
-		if code != 1 || !strings.Contains(stderr, "zone-level AOP still reads as disabled") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "zone-level AOP still reads as disabled")
 	})
 }
 
@@ -588,12 +523,8 @@ func TestZoneStatus(t *testing.T) {
 	h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(2))
 	h.fake.AddZoneCert(cftest.ZoneCertID(3), newTestCA(t, 3650).issue(t), cftest.UploadedOn(3), "pending_deployment")
 	code, stdout, stderr := h.run("zone", "status")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
-	if w := h.fake.Writes(); len(w) != 0 {
-		t.Errorf("sent %d writes", len(w))
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.Empty(t, h.fake.Writes(), "writes")
 	for _, want := range []string{
 		"Zone-level AOP: enabled\n",
 		"Certificates (3):\n",
@@ -608,43 +539,33 @@ func TestZoneStatus(t *testing.T) {
 		"Warning: 2 certificates are active.",
 		"Per-hostname certificates override zone-level ones",
 	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout)
-		}
+		assert.Contains(t, stdout, want)
 	}
-	if n := strings.Count(stdout, "[in use"); n != 1 {
-		t.Errorf("marked %d certificates as in use, want 1", n)
-	}
+	assert.Equal(t, 1, strings.Count(stdout, "[in use"), "certificates marked as in use")
 
 	t.Run("disabled, without AOP_CA_CERT", func(t *testing.T) {
 		h := zoneHarness(t)
 		h.fake.ZoneEnabled = false
 		delete(h.env, "AOP_CA_CERT")
 		code, stdout, stderr := h.run("zone", "status")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
 			"Zone-level AOP: disabled",
 			"signed by AOP_CA_CERT: unknown (AOP_CA_CERT not set)",
 			"In use: none, zone-level AOP is disabled",
 		} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
-		if strings.Contains(stdout, "[in use") || strings.Contains(stdout, "Warning") {
-			t.Errorf("stdout:\n%s", stdout)
-		}
+		assert.NotContains(t, stdout, "[in use")
+		assert.NotContains(t, stdout, "Warning")
 	})
 
 	t.Run("listed ID that is not a UUID", func(t *testing.T) {
 		h := zoneHarness(t)
 		h.fake.AddZoneCert("settings", h.ca.issue(t), cftest.UploadedOn(2))
 		code, _, stderr := h.run("zone", "status")
-		if code != 1 || !strings.Contains(stderr, "the list has an invalid certificate ID") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "the list has an invalid certificate ID")
 	})
 
 	t.Run("pages", func(t *testing.T) {
@@ -652,9 +573,9 @@ func TestZoneStatus(t *testing.T) {
 		h.fake.PerPage = 1
 		h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(2))
 		code, stdout, stderr := h.run("zone", "status")
-		if code != 0 || !strings.Contains(stdout, "Certificates (2):") || !strings.Contains(stdout, "  "+zoneTwo+"  [in use") {
-			t.Errorf("exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stdout, "Certificates (2):")
+		assert.Contains(t, stdout, "  "+zoneTwo+"  [in use")
 	})
 
 	t.Run("a page repeated", func(t *testing.T) {
@@ -672,9 +593,8 @@ func TestZoneStatus(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("zone", "status")
-		if code != 1 || !strings.Contains(stderr, "more than once") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "more than once")
 	})
 }
 
@@ -692,35 +612,29 @@ func TestZonePrune(t *testing.T) {
 		h := twoActive(t)
 		tty := answer(h, "y\n")
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld)
-		if code != 0 || strings.Join(deletes(h), ",") != zoneOld || !strings.Contains(stderr, "Deleted "+zoneOld) {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
-		if !strings.Contains(tty.prompt.String(), "Delete 1 zone certificate(s)? [y/N]") {
-			t.Errorf("prompt = %q", tty.prompt.String())
-		}
-		if n := h.fake.Count(http.MethodGet, "/origin_tls_client_auth/"+zoneOld); n < 3 {
-			t.Errorf("polled %d times, want polling until gone", n)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, zoneOld, strings.Join(deletes(h), ","), "deleted")
+		assert.Contains(t, stderr, "Deleted "+zoneOld)
+		assert.Contains(t, tty.prompt.String(), "Delete 1 zone certificate(s)? [y/N]", "prompt")
+		assert.GreaterOrEqual(t, h.fake.Count(http.MethodGet, "/origin_tls_client_auth/"+zoneOld), 3, "polls, want polling until gone")
 	})
 
 	t.Run("declined", func(t *testing.T) {
 		h := twoActive(t)
 		answer(h, "n\n")
-		if code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld); code != 1 || len(deletes(h)) != 0 {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld)
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("dry run", func(t *testing.T) {
 		h := twoActive(t)
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--dry-run")
-		if code != 0 || !strings.Contains(stderr, "Certificates to delete:\n  "+zoneOld) || !strings.Contains(stderr, "Dry run: nothing changed.") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("dry run sent %d writes", len(w))
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Certificates to delete:\n  "+zoneOld)
+		assert.Contains(t, stderr, "Dry run: nothing changed.")
+		assert.Empty(t, h.fake.Writes(), "dry run writes")
 	})
 
 	// otherFallback has zone-level AOP enabled, with zoneOld, the CA's, in
@@ -739,78 +653,66 @@ func TestZonePrune(t *testing.T) {
 		h := otherFallback(t)
 		tty := answer(h, "n\n")
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld)
-		if !strings.Contains(tty.prompt.String(), "[y/N]") {
-			t.Errorf("prompt = %q", tty.prompt.String())
-		}
+		assert.Contains(t, tty.prompt.String(), "[y/N]", "prompt")
 		for _, want := range []string{
 			fallbackWarning,
 			"After the deletes, Cloudflare uses: " + zoneTwo + " (derived: the newest remaining active certificate), signed by AOP_CA_CERT: no",
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
-		if code != 1 || len(deletes(h)) != 0 {
-			t.Errorf("exit %d, deleted %v", code, deletes(h))
-		}
+		assert.Equal(t, 1, code, "exit code")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("falls back to another CA, yes", func(t *testing.T) {
 		h := otherFallback(t)
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
-		if code != 0 || strings.Join(deletes(h), ",") != zoneOld || !strings.Contains(stderr, fallbackWarning) {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, zoneOld, strings.Join(deletes(h), ","), "deleted")
+		assert.Contains(t, stderr, fallbackWarning)
 	})
 
 	t.Run("falls back to the CA's own certificate", func(t *testing.T) {
 		h := zoneHarness(t)
 		h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(2))
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneTwo, "--yes")
-		if code != 0 || strings.Contains(stderr, "Warning") || !strings.Contains(stderr, "After the deletes, Cloudflare uses: "+zoneOld) {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.NotContains(t, stderr, "Warning")
+		assert.Contains(t, stderr, "After the deletes, Cloudflare uses: "+zoneOld)
 	})
 
 	t.Run("other CA left in place while disabled", func(t *testing.T) {
 		h := otherFallback(t)
 		h.fake.ZoneEnabled = false
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
-		if code != 0 || strings.Contains(stderr, "Warning") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.NotContains(t, stderr, "Warning")
 	})
 
 	t.Run("last active while enabled", func(t *testing.T) {
 		h := zoneHarness(t)
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
-		if code != 1 || !strings.Contains(stderr, "Refused "+zoneOld+": it is the last active zone certificate") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused "+zoneOld+": it is the last active zone certificate")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("last active while disabled", func(t *testing.T) {
 		h := zoneHarness(t)
 		h.fake.ZoneEnabled = false
-		if code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes"); code != 0 || strings.Join(deletes(h), ",") != zoneOld {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, zoneOld, strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("every active one keeps the newest", func(t *testing.T) {
 		h := twoActive(t)
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneTwo, "--cert-id", zoneOld, "--yes")
-		if code != 1 || !strings.Contains(stderr, "Refused "+zoneTwo+": it is the last active zone certificate") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != zoneOld {
-			t.Errorf("deleted %v, want %s only", d, zoneOld)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused "+zoneTwo+": it is the last active zone certificate")
+		assert.Equal(t, zoneOld, strings.Join(deletes(h), ","), "deleted, want %s only", zoneOld)
 	})
 
 	t.Run("re-check before the delete", func(t *testing.T) {
@@ -828,15 +730,10 @@ func TestZonePrune(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
-		if lists < 2 {
-			t.Fatalf("listed %d times, want a re-check before the delete", lists)
-		}
-		if code != 1 || !strings.Contains(stderr, "Refused "+zoneOld+": it is now the last active zone certificate") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		require.GreaterOrEqual(t, lists, 2, "lists, want a re-check before the delete")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused "+zoneOld+": it is now the last active zone certificate")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("re-check sees the setting enabled", func(t *testing.T) {
@@ -853,9 +750,9 @@ func TestZonePrune(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("zone", "prune", "--cert-id", zoneOld, "--yes")
-		if code != 1 || len(deletes(h)) != 0 || !strings.Contains(stderr, "now the last active") {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Empty(t, deletes(h), "deleted")
+		assert.Contains(t, stderr, "now the last active")
 	})
 
 	for _, tt := range []struct {
@@ -878,12 +775,9 @@ func TestZonePrune(t *testing.T) {
 			h := zoneHarness(t)
 			id := tt.setup(t, h)
 			code, _, stderr := h.run("zone", "prune", "--cert-id", id, "--yes")
-			if code != tt.code || !strings.Contains(stderr, tt.want) {
-				t.Errorf("exit %d, want %d; stderr:\n%s", code, tt.code, stderr)
-			}
-			if d := deletes(h); len(d) != 0 {
-				t.Errorf("deleted %v", d)
-			}
+			assert.Equal(t, tt.code, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, tt.want)
+			assert.Empty(t, deletes(h), "deleted")
 		})
 	}
 
@@ -892,9 +786,8 @@ func TestZonePrune(t *testing.T) {
 		id := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 		h.fake.AddZoneCert(id, h.ca.issue(t), cftest.UploadedOn(0))
 		code, _, stderr := h.run("zone", "prune", "--cert-id", strings.ToUpper(id), "--cert-id", id, "--yes")
-		if code != 0 || strings.Join(deletes(h), ",") != id {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, id, strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("ID without dashes", func(t *testing.T) {
@@ -902,13 +795,11 @@ func TestZonePrune(t *testing.T) {
 		id := strings.ReplaceAll(cftest.ZoneCertID(3), "-", "")
 		h.fake.AddZoneCert(id, h.ca.issue(t), cftest.UploadedOn(0))
 		code, stdout, stderr := h.run("zone", "status")
-		if code != 0 || !strings.Contains(stdout, "  "+id+"\n") {
-			t.Fatalf("status: exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
+		require.Equal(t, 0, code, "status: exit code; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		require.Contains(t, stdout, "  "+id+"\n", "status")
 		code, _, stderr = h.run("zone", "prune", "--cert-id", id, "--yes")
-		if code != 0 || strings.Join(deletes(h), ",") != id {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, id, strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("pending deletion is waited for", func(t *testing.T) {
@@ -916,8 +807,8 @@ func TestZonePrune(t *testing.T) {
 		h.fake.AddZoneCert(cftest.ZoneCertID(3), h.ca.issue(t), cftest.UploadedOn(0), cftest.StatusPendingDeletion, "gone")
 		noPrompt(t, h)
 		code, _, stderr := h.run("zone", "prune", "--cert-id", cftest.ZoneCertID(3))
-		if code != 0 || len(deletes(h)) != 0 || !strings.Contains(stderr, "Deleted "+cftest.ZoneCertID(3)) {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Empty(t, deletes(h), "deleted")
+		assert.Contains(t, stderr, "Deleted "+cftest.ZoneCertID(3))
 	})
 }

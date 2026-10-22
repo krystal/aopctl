@@ -25,6 +25,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Token mixes base64 and other characters, so redacting only base64 runs
@@ -256,23 +259,19 @@ func WriteCutOff(t *testing.T, w http.ResponseWriter, status int) {
 	_, _ = io.WriteString(w, `{"success":true,"result":{"id":"`)
 	w.(http.Flusher).Flush()
 	conn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		t.Errorf("hijack: %v", err)
-		return
+	if assert.NoError(t, err, "hijack") {
+		_ = conn.Close()
 	}
-	_ = conn.Close()
 }
 
 // ResetConnection resets the connection before any response is sent.
 func ResetConnection(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
 	conn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		t.Errorf("hijack: %v", err)
-		return
+	if assert.NoError(t, err, "hijack") {
+		_ = conn.(*net.TCPConn).SetLinger(0)
+		_ = conn.Close()
 	}
-	_ = conn.(*net.TCPConn).SetLinger(0)
-	_ = conn.Close()
 }
 
 // Stall holds a request until the client gives up on it, so the command's
@@ -486,13 +485,9 @@ func (f *Fake) putAssociations(w http.ResponseWriter, body []byte) {
 func IssueLeaf(t *testing.T, ca *x509.Certificate, caKey crypto.Signer) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate leaf key: %v", err)
-	}
+	require.NoError(t, err, "generate leaf key")
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		t.Fatalf("leaf serial: %v", err)
-	}
+	require.NoError(t, err, "leaf serial")
 	notBefore := time.Now().UTC().Add(-time.Hour)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
@@ -504,9 +499,7 @@ func IssueLeaf(t *testing.T, ca *x509.Certificate, caKey crypto.Signer) string {
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, key.Public(), caKey)
-	if err != nil {
-		t.Fatalf("issue leaf: %v", err)
-	}
+	require.NoError(t, err, "issue leaf")
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
