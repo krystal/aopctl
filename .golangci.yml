@@ -9,6 +9,7 @@ linters:
     - misspell
     - nolintlint
     - revive
+    - testifylint
   settings:
     forbidigo:
       # Match by package, so an aliased import cannot escape the patterns.
@@ -26,6 +27,12 @@ linters:
           msg: the aopctl package must not log
         - pattern: ^slog\.(Debug|Info|Warn|Error|Log|LogAttrs)(Context)?$
           msg: the aopctl package must not log
+    testifylint:
+      disable:
+        # A test stops at a failed check only when later checks would panic
+        # or mean nothing, so other error checks use assert and a run reports
+        # every failure.
+        - require-error
   exclusions:
     # Unchecked Close and fmt.Fprint* errors, mostly in test cleanup.
     presets:

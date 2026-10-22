@@ -3,9 +3,11 @@ package cli
 import (
 	"crypto/x509"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/krystal/aopctl/aopctl"
 )
@@ -23,44 +25,26 @@ func TestCAProfile(t *testing.T) {
 			h := newHarness(t)
 			h.now = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 			code, stdout, stderr := h.run("ca", "create", "--key-type", tt.keyType, "--days", "100", "--name", "Example AOP CA")
-			if code != 0 {
-				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-			}
+			require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 			cert, key := parseItemPair(t, stdout)
 
-			if !cert.BasicConstraintsValid || !cert.IsCA {
-				t.Error("not a CA")
-			}
-			if cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
-				t.Errorf("MaxPathLen = %d (zero %v), want 0", cert.MaxPathLen, cert.MaxPathLenZero)
-			}
-			if cert.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign {
-				t.Errorf("KeyUsage = %b, want CertSign|CRLSign", cert.KeyUsage)
-			}
-			if len(cert.ExtKeyUsage) != 0 || len(cert.UnknownExtKeyUsage) != 0 {
-				t.Errorf("has EKU %v %v", cert.ExtKeyUsage, cert.UnknownExtKeyUsage)
-			}
-			if want := h.now.Add(-time.Hour); !cert.NotBefore.Equal(want) {
-				t.Errorf("NotBefore = %s, want %s", cert.NotBefore, want)
-			}
-			if got := cert.NotAfter.Sub(cert.NotBefore); got != 100*24*time.Hour {
-				t.Errorf("validity = %s, want 100 days", got)
-			}
-			if len(cert.SubjectKeyId) == 0 {
-				t.Error("no SubjectKeyId")
-			}
-			if bits := cert.SerialNumber.BitLen(); bits == 0 || bits > 128 {
-				t.Errorf("serial has %d bits, want 1 to 128", bits)
-			}
-			if cert.Subject.CommonName != "Example AOP CA" {
-				t.Errorf("CN = %q", cert.Subject.CommonName)
-			}
-			if got := describeKey(key.Public()); got != tt.key {
-				t.Errorf("key = %s, want %s", got, tt.key)
-			}
-			if warnings := aopctl.CAProfileWarnings(cert); len(warnings) != 0 {
-				t.Errorf("profile warnings: %v", warnings)
-			}
+			assert.True(t, cert.BasicConstraintsValid, "not a CA")
+			assert.True(t, cert.IsCA, "not a CA")
+			assert.Zero(t, cert.MaxPathLen, "MaxPathLen")
+			assert.True(t, cert.MaxPathLenZero, "MaxPathLenZero")
+			assert.Equal(t, x509.KeyUsageCertSign|x509.KeyUsageCRLSign, cert.KeyUsage, "KeyUsage")
+			assert.Empty(t, cert.ExtKeyUsage, "EKU")
+			assert.Empty(t, cert.UnknownExtKeyUsage, "unknown EKU")
+			want := h.now.Add(-time.Hour)
+			assert.True(t, cert.NotBefore.Equal(want), "NotBefore = %s, want %s", cert.NotBefore, want)
+			assert.Equal(t, 100*24*time.Hour, cert.NotAfter.Sub(cert.NotBefore), "validity")
+			assert.NotEmpty(t, cert.SubjectKeyId, "SubjectKeyId")
+			bits := cert.SerialNumber.BitLen()
+			assert.Positive(t, bits, "serial bits")
+			assert.LessOrEqual(t, bits, 128, "serial bits")
+			assert.Equal(t, "Example AOP CA", cert.Subject.CommonName, "CN")
+			assert.Equal(t, tt.key, describeKey(key.Public()), "key")
+			assert.Empty(t, aopctl.CAProfileWarnings(cert), "profile warnings")
 		})
 	}
 }
@@ -70,43 +54,31 @@ func TestCAShorterThanLeaf(t *testing.T) {
 	ca := newTestCA(t, 100)
 	h.env["AOP_CA_CERT"], h.env["AOP_CA_KEY"] = ca.certPEM, ca.keyPEM
 	code, _, stderr := h.run("hostname", "issue", "--hostname", "app.example.com")
-	if code != 1 {
-		t.Fatalf("exit %d, want 1; stderr:\n%s", code, stderr)
-	}
-	if !strings.Contains(stderr, "the CA expires") {
-		t.Errorf("stderr does not explain the CA expiry:\n%s", stderr)
-	}
-	if n := len(h.fake.Recorded()); n != 0 {
-		t.Errorf("sent %d requests, want none", n)
-	}
+	require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+	assert.Contains(t, stderr, "the CA expires", "stderr does not explain the CA expiry")
+	assert.Empty(t, h.fake.Recorded(), "requests sent")
 }
 
 func TestKeyCertMismatch(t *testing.T) {
 	ca, other := newTestCA(t, 3650), newTestCA(t, 3650)
-	if _, _, err := loadCA(ca.certPEM, other.keyPEM); err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Errorf("loadCA mismatched pair: err = %v", err)
-	}
+	_, _, err := loadCA(ca.certPEM, other.keyPEM)
+	assert.ErrorContains(t, err, "does not match", "loadCA mismatched pair")
 
 	h := newHarness(t)
 	h.env["AOP_CA_KEY"] = other.keyPEM
 	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
-	if code != 1 || !strings.Contains(stderr, "AOP_CA_KEY does not match") {
-		t.Errorf("exit %d, stderr:\n%s", code, stderr)
-	}
-	if n := len(h.fake.Recorded()); n != 0 {
-		t.Errorf("sent %d requests, want none", n)
-	}
+	assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+	assert.Contains(t, stderr, "AOP_CA_KEY does not match")
+	assert.Empty(t, h.fake.Recorded(), "requests sent")
 }
 
 func TestLoadCARejectsWrongInputs(t *testing.T) {
 	ca := newTestCA(t, 3650)
 	leafPEM := ca.issue(t)
-	if _, _, err := loadCA(leafPEM, ca.keyPEM); err == nil || !strings.Contains(err.Error(), "not a CA") {
-		t.Errorf("leaf as CA: err = %v", err)
-	}
-	if _, _, err := loadCA(ca.certPEM, ca.certPEM); err == nil || !strings.Contains(err.Error(), "PKCS#8") {
-		t.Errorf("certificate as key: err = %v", err)
-	}
+	_, _, err := loadCA(leafPEM, ca.keyPEM)
+	assert.ErrorContains(t, err, "not a CA", "leaf as CA")
+	_, _, err = loadCA(ca.certPEM, ca.certPEM)
+	assert.ErrorContains(t, err, "PKCS#8", "certificate as key")
 }
 
 func TestPEMWhitespace(t *testing.T) {
@@ -114,10 +86,6 @@ func TestPEMWhitespace(t *testing.T) {
 	h.env["AOP_CA_CERT"] = "\n\n  " + h.ca.certPEM + "\n \n"
 	h.env["AOP_CA_KEY"] = "\t\n" + h.ca.keyPEM + "\n\n"
 	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
-	if n := h.fake.Count(http.MethodGet, "/hostnames/app.example.com"); n != 1 {
-		t.Errorf("did not reach the preflight reads")
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/hostnames/app.example.com"), "did not reach the preflight reads")
 }

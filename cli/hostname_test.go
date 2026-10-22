@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/krystal/aopctl/aopctl"
 	"github.com/krystal/aopctl/internal/cftest"
 )
@@ -61,30 +64,22 @@ func countIn(reqs []cftest.Request, method, suffix string) int {
 func TestHostnameIssueDryRun(t *testing.T) {
 	h := issueHarness(t)
 	code, _, stderr := h.run("hostname", "issue", "--dry-run")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
-	if w := h.fake.Writes(); len(w) != 0 {
-		t.Errorf("dry run sent %d write requests", len(w))
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.Empty(t, h.fake.Writes(), "dry run write requests")
 	for _, want := range []string{
 		hostA + ": old-1 (enabled=true) -> new",
 		hostC + ": old-2 (enabled=true) -> new",
 		hostD + ": none -> new",
 		"Dry run: nothing changed.",
 	} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr)
-		}
+		assert.Contains(t, stderr, want)
 	}
 }
 
 func TestHostnameIssue(t *testing.T) {
 	h := issueHarness(t)
 	code, stdout, stderr := h.run("hostname", "issue")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	reqs := h.fake.Recorded()
 
 	var upload struct {
@@ -93,33 +88,19 @@ func TestHostnameIssue(t *testing.T) {
 	}
 	for _, r := range reqs {
 		if r.Method == http.MethodPost {
-			if err := json.Unmarshal(r.Body, &upload); err != nil {
-				t.Fatalf("upload body: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(r.Body, &upload), "upload body")
 		}
 	}
 	leaf, err := aopctl.ParseCertificatePEM(upload.Certificate)
-	if err != nil {
-		t.Fatalf("uploaded certificate: %v", err)
-	}
-	if err := cftest.VerifyClientAuth(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)); err != nil {
-		t.Errorf("uploaded leaf does not verify for client auth: %v", err)
-	}
+	require.NoError(t, err, "uploaded certificate")
+	assert.NoError(t, cftest.VerifyClientAuth(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)), "uploaded leaf does not verify for client auth")
 	key, err := aopctl.ParsePrivateKeyPEM(upload.PrivateKey)
-	if err != nil {
-		t.Fatalf("uploaded key is not PKCS#8: %v", err)
-	}
-	if !cftest.KeyMatches(leaf, key) {
-		t.Error("uploaded key does not match the uploaded certificate")
-	}
+	require.NoError(t, err, "uploaded key is not PKCS#8")
+	assert.True(t, cftest.KeyMatches(leaf, key), "uploaded key does not match the uploaded certificate")
 	keyLine := strings.Split(upload.PrivateKey, "\n")[1]
-	if strings.Contains(stdout+stderr, keyLine) {
-		t.Error("output contains the leaf key")
-	}
+	assert.NotContains(t, stdout+stderr, keyLine, "output contains the leaf key")
 
-	if n := countIn(reqs, http.MethodGet, "/certificates/new-1"); n < 2 {
-		t.Errorf("polled the new certificate %d times, want it polled to active", n)
-	}
+	assert.GreaterOrEqual(t, countIn(reqs, http.MethodGet, "/certificates/new-1"), 2, "polls of the new certificate, want it polled to active")
 
 	var put struct {
 		Config []struct {
@@ -128,46 +109,33 @@ func TestHostnameIssue(t *testing.T) {
 			Enabled  *bool  `json:"enabled"`
 		} `json:"config"`
 	}
-	if countIn(reqs, http.MethodPut, "/hostnames") != 1 {
-		t.Fatal("want exactly one PUT")
-	}
+	require.Equal(t, 1, countIn(reqs, http.MethodPut, "/hostnames"), "want exactly one PUT")
 	for _, r := range reqs {
 		if r.Method == http.MethodPut {
-			if err := json.Unmarshal(r.Body, &put); err != nil {
-				t.Fatalf("PUT body: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(r.Body, &put), "PUT body")
 		}
 	}
 	var putHosts []string
 	for _, c := range put.Config {
 		putHosts = append(putHosts, c.Hostname)
-		if c.CertID != "new-1" || c.Enabled == nil || !*c.Enabled {
-			t.Errorf("PUT entry %+v, want new-1 enabled", c)
+		assert.Equal(t, "new-1", c.CertID, "PUT entry %+v", c)
+		if assert.NotNil(t, c.Enabled, "PUT entry %+v, want enabled", c) {
+			assert.True(t, *c.Enabled, "PUT entry %+v, want enabled", c)
 		}
 	}
-	if got := strings.Join(putHosts, ","); got != h.env["AOP_HOSTNAMES"] {
-		t.Errorf("PUT hostnames %s", got)
-	}
+	assert.Equal(t, h.env["AOP_HOSTNAMES"], strings.Join(putHosts, ","), "PUT hostnames")
 	afterPut := requestsAfter(reqs, http.MethodPut, "/hostnames")
 	for _, host := range []string{hostA, hostB, hostC, hostD} {
-		if countIn(afterPut, http.MethodGet, "/hostnames/"+host) < 2 {
-			t.Errorf("did not poll %s until active", host)
-		}
-		if got := h.fake.AssocCertID(host); got != "new-1" {
-			t.Errorf("%s uses %q, want new-1", host, got)
-		}
+		assert.GreaterOrEqual(t, countIn(afterPut, http.MethodGet, "/hostnames/"+host), 2, "polls of %s, want it polled until active", host)
+		assert.Equal(t, "new-1", h.fake.AssocCertID(host), "%s association", host)
 	}
-	if n := countIn(reqs, http.MethodDelete, ""); n != 0 {
-		t.Errorf("sent %d DELETEs", n)
-	}
+	assert.Zero(t, countIn(reqs, http.MethodDelete, ""), "DELETEs")
 
 	for _, want := range []string{
 		"They no longer use: old-1, old-2",
 		"aopctl hostname prune --cert-id old-1 --cert-id old-2 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
 	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout)
-		}
+		assert.Contains(t, stdout, want)
 	}
 }
 
@@ -178,12 +146,9 @@ func TestHostnameIssueFailures(t *testing.T) {
 			h.fake.AddCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d write requests", len(w))
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "the zone has 10 hostname certificates")
+		assert.Empty(t, h.fake.Writes(), "write requests")
 	})
 
 	t.Run("upload transport error", func(t *testing.T) {
@@ -196,15 +161,11 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if strings.Contains(stderr, "To resume") {
-			t.Errorf("printed recovery commands without a certificate ID:\n%s", stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload outcome unknown")
+		assert.Contains(t, stderr, "aopctl hostname status before retrying")
+		assert.NotContains(t, stderr, "To resume", "printed recovery commands without a certificate ID")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
 	t.Run("upload body cut off", func(t *testing.T) {
@@ -217,12 +178,10 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "HTTP 200: unexpected EOF") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload outcome unknown")
+		assert.Contains(t, stderr, "HTTP 200: unexpected EOF")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
 	t.Run("upload result with an undecodable ID", func(t *testing.T) {
@@ -235,12 +194,10 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload outcome unknown")
+		assert.Contains(t, stderr, "aopctl hostname status before retrying")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
 	t.Run("upload rejected", func(t *testing.T) {
@@ -253,12 +210,10 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload failed") || strings.Contains(stderr, "outcome unknown") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "upload failed")
+		assert.NotContains(t, stderr, "outcome unknown")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
 	// A server error or an unsuccessful 2xx may follow a create that
@@ -281,12 +236,10 @@ func TestHostnameIssueFailures(t *testing.T) {
 				return true
 			}
 			code, _, stderr := h.run("hostname", "issue")
-			if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-				t.Errorf("sent %d PUTs", n)
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "upload outcome unknown")
+			assert.Contains(t, stderr, "aopctl hostname status before retrying")
+			assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		})
 	}
 
@@ -295,30 +248,23 @@ func TestHostnameIssueFailures(t *testing.T) {
 		h.fake.UploadStatuses = []string{"pending_deployment"}
 		h.waitLimit = 3
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last status pending_deployment") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "timed out waiting for certificate new-1 to become active: last status pending_deployment")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
 	t.Run("deployment timed out", func(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.UploadStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "certificate new-1 is deployment_timed_out") || !strings.Contains(stderr, "New certificate: new-1") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-			t.Errorf("sent %d PUTs", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "certificate new-1 is deployment_timed_out")
+		assert.Contains(t, stderr, "New certificate: new-1")
+		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		// hostname associate refuses a certificate that is not active, and no
 		// hostname changed, so there is nothing to resume or roll back.
 		for _, unwanted := range []string{"To resume", "To roll back"} {
-			if strings.Contains(stderr, unwanted) {
-				t.Errorf("stderr has %q:\n%s", unwanted, stderr)
-			}
+			assert.NotContains(t, stderr, unwanted)
 		}
 		hosts := " --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com\n"
 		for _, want := range []string{
@@ -327,22 +273,15 @@ func TestHostnameIssueFailures(t *testing.T) {
 			"aopctl hostname associate --cert-id new-1" + hosts,
 			"aopctl hostname prune --cert-id new-1" + hosts,
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
 
 		prune := commandLines(stderr, "aopctl hostname prune --cert-id new-1")
-		if len(prune) != 1 {
-			t.Fatalf("want one prune command, got %q", prune)
-		}
+		require.Len(t, prune, 1, "prune commands")
 		h.openTTY = func() (io.ReadWriteCloser, error) { return &fakeTTY{Reader: strings.NewReader("y\n")}, nil }
-		if code, _, stderr := h.run(prune[0]...); code != 0 {
-			t.Fatalf("prune: exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != "new-1" {
-			t.Errorf("deleted %v, want new-1", d)
-		}
+		code, _, stderr = h.run(prune[0]...)
+		require.Equal(t, 0, code, "prune: exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "new-1", strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("PUT fails", func(t *testing.T) {
@@ -355,22 +294,16 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		// A PUT is not a polling read, so a 5xx is not retried.
-		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 1 {
-			t.Errorf("sent %d PUTs, want 1", n)
-		}
+		assert.Equal(t, 1, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		for _, want := range []string{
 			"New certificate: new-1",
 			"aopctl hostname associate --cert-id new-1 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
 			"aopctl hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
 			"aopctl hostname associate --cert-id old-2 --hostname c.example.com",
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
 	})
 
@@ -379,17 +312,13 @@ func TestHostnameIssueFailures(t *testing.T) {
 		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.waitLimit = 4
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
 			"timed out waiting for hostnames to use certificate new-1",
 			hostA + ": new-1 (enabled=true, status=pending_deployment)",
 			"To resume, run:",
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
 	})
 
@@ -403,12 +332,9 @@ func TestHostnameIssueFailures(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "read association for b.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d write requests", len(w))
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "read association for b.example.com")
+		assert.Empty(t, h.fake.Writes(), "write requests")
 	})
 
 	t.Run("preflight association without a cert_id", func(t *testing.T) {
@@ -422,24 +348,18 @@ func TestHostnameIssueFailures(t *testing.T) {
 		}
 		h.waitLimit = 20
 		code, _, stderr := h.run("hostname", "issue")
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Fatalf("sent %d write requests", len(w))
-		}
-		if code != 1 || !strings.Contains(stderr, "read association for d.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Empty(t, h.fake.Writes(), "write requests")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "read association for d.example.com")
 	})
 
 	t.Run("disabled hostname", func(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.SetAssoc(hostC, "old-2", new(false))
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "c.example.com has AOP disabled") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d write requests", len(w))
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "c.example.com has AOP disabled")
+		assert.Empty(t, h.fake.Writes(), "write requests")
 	})
 }
 
@@ -455,16 +375,11 @@ func TestHostnameIssueUploadDrift(t *testing.T) {
 		return true
 	}
 	code, stdout, stderr := h.run("hostname", "issue")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	reqs := h.fake.Recorded()
-	if n := countIn(requestsAfter(reqs, http.MethodPost, "/certificates"), http.MethodGet, "/certificates/new-1"); n < 2 {
-		t.Errorf("polled new-1 %d times after the upload, want it polled to active", n)
-	}
-	if !strings.Contains(stdout, "now use certificate new-1") {
-		t.Errorf("stdout:\n%s", stdout)
-	}
+	assert.GreaterOrEqual(t, countIn(requestsAfter(reqs, http.MethodPost, "/certificates"), http.MethodGet, "/certificates/new-1"), 2,
+		"polls of new-1 after the upload, want it polled to active")
+	assert.Contains(t, stdout, "now use certificate new-1")
 }
 
 // TestHostnameIssueTransientPolling covers polling reads that fail with HTTP 429
@@ -499,12 +414,8 @@ func TestHostnameIssueTransientPolling(t *testing.T) {
 		h.waitLimit = 20
 		failFirst(h, "/certificates/new-1", false, http.StatusServiceUnavailable, http.StatusTooManyRequests)
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if got := h.fake.AssocCertID(hostA); got != "new-1" {
-			t.Errorf("%s uses %q, want new-1", hostA, got)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "new-1", h.fake.AssocCertID(hostA), "%s association", hostA)
 	})
 
 	t.Run("association polling recovers", func(t *testing.T) {
@@ -512,12 +423,9 @@ func TestHostnameIssueTransientPolling(t *testing.T) {
 		h.waitLimit = 20
 		failFirst(h, "/hostnames/"+hostA, true, http.StatusServiceUnavailable, http.StatusTooManyRequests)
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := countIn(requestsAfter(h.fake.Recorded(), http.MethodPut, "/hostnames"), http.MethodGet, "/hostnames/"+hostA); n < 4 {
-			t.Errorf("polled %s %d times after the PUT, want the two failures retried", hostA, n)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.GreaterOrEqual(t, countIn(requestsAfter(h.fake.Recorded(), http.MethodPut, "/hostnames"), http.MethodGet, "/hostnames/"+hostA), 4,
+			"polls of %s after the PUT, want the two failures retried", hostA)
 	})
 
 	t.Run("budget runs out", func(t *testing.T) {
@@ -525,12 +433,9 @@ func TestHostnameIssueTransientPolling(t *testing.T) {
 		h.waitLimit = 3
 		failFirst(h, "/certificates/new-1", false, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable)
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last error: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 503") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 3 {
-			t.Errorf("polled %d times, want 3", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "timed out waiting for certificate new-1 to become active: last error: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 503")
+		assert.Equal(t, 3, h.fake.Count(http.MethodGet, "/certificates/new-1"), "polls")
 	})
 
 	t.Run("other errors fail at once", func(t *testing.T) {
@@ -538,12 +443,9 @@ func TestHostnameIssueTransientPolling(t *testing.T) {
 		h.waitLimit = 20
 		failFirst(h, "/certificates/new-1", false, http.StatusBadRequest)
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 400") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 1 {
-			t.Errorf("polled %d times, want 1", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 400")
+		assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/certificates/new-1"), "polls")
 	})
 }
 
@@ -591,16 +493,11 @@ func TestPollingIncompleteResponses(t *testing.T) {
 			h.waitLimit = 20
 			failed := failGets(h, tt.after, tt.suffix, 1, func(w http.ResponseWriter) { cftest.WriteCutOff(t, w, http.StatusOK) })
 			code, _, stderr := h.run(tt.args...)
-			if code != 0 {
-				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if n := failed(); n != 1 {
-				t.Fatalf("cut off %d bodies, want 1", n)
-			}
+			require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+			require.Equal(t, 1, failed(), "cut-off bodies")
 			// The cut-off read, then at least two polls to finish.
-			if n := countIn(requestsAfter(h.fake.Recorded(), tt.after, tt.afterPath), http.MethodGet, tt.suffix); n < 3 {
-				t.Errorf("polled %d times after the %s, want the cut-off read retried", n, tt.after)
-			}
+			assert.GreaterOrEqual(t, countIn(requestsAfter(h.fake.Recorded(), tt.after, tt.afterPath), http.MethodGet, tt.suffix), 3,
+				"polls after the %s, want the cut-off read retried", tt.after)
 		})
 	}
 
@@ -612,14 +509,10 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		// to make sure aopctl sees the error.
 		failGets(h, http.MethodPost, "/certificates/new-1", 2, func(w http.ResponseWriter) { cftest.ResetConnection(t, w) })
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		// One wait each for the certificate and the associations, plus the
 		// retry.
-		if h.waits < 3 {
-			t.Errorf("waited %d times, want a retry after the reset", h.waits)
-		}
+		assert.GreaterOrEqual(t, h.waits, 3, "waits, want a retry after the reset")
 	})
 
 	t.Run("a malformed response fails at once", func(t *testing.T) {
@@ -629,12 +522,9 @@ func TestPollingIncompleteResponses(t *testing.T) {
 			cftest.WriteRaw(w, http.StatusOK, "text/html", "<html>maintenance</html>")
 		})
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, `check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 200: undecodable response (content type "text/html")`) {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 1 {
-			t.Errorf("polled %d times, want 1", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, `check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 200: undecodable response (content type "text/html")`)
+		assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/certificates/new-1"), "polls")
 	})
 }
 
@@ -659,12 +549,8 @@ func TestHostnameIssueAssociationTimedOut(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if got := h.fake.AssocCertID(hostA); got != "new-1" {
-			t.Errorf("%s uses %q, want new-1", hostA, got)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "new-1", h.fake.AssocCertID(hostA), "%s association", hostA)
 	})
 
 	t.Run("timed out on the new certificate", func(t *testing.T) {
@@ -672,12 +558,9 @@ func TestHostnameIssueAssociationTimedOut(t *testing.T) {
 		h.waitLimit = 20
 		h.fake.AssocStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 || !strings.Contains(stderr, "association for a.example.com is deployment_timed_out") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if h.waits != 2 {
-			t.Errorf("waited %d times, want 2: one for the certificate and one for the associations", h.waits)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "association for a.example.com is deployment_timed_out")
+		assert.Equal(t, 2, h.waits, "waits, want one for the certificate and one for the associations")
 	})
 }
 
@@ -707,28 +590,18 @@ func TestHostnameIssueLastSlotRecovery(t *testing.T) {
 		return true
 	}
 	code, _, stderr := h.run("hostname", "issue")
-	if code != 1 {
-		t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 1, code, "issue: exit code; stderr:\n%s", stderr)
 	resume := commandLines(stderr, "aopctl hostname associate --cert-id new-1")
-	if len(resume) != 1 {
-		t.Fatalf("want one resume command, got %q", resume)
-	}
+	require.Len(t, resume, 1, "resume commands")
 
 	h.fake.Hook = nil
 	before := len(h.fake.Recorded())
 	code, _, stderr = h.run(resume[0]...)
-	if code != 0 {
-		t.Fatalf("resume: exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "resume: exit code; stderr:\n%s", stderr)
 	for _, host := range []string{hostA, hostB, hostC, hostD} {
-		if got := h.fake.AssocCertID(host); got != "new-1" {
-			t.Errorf("%s uses %q, want new-1", host, got)
-		}
+		assert.Equal(t, "new-1", h.fake.AssocCertID(host), "%s association", host)
 	}
-	if n := countIn(h.fake.Recorded()[before:], http.MethodGet, "/certificates"); n != 0 {
-		t.Errorf("resume listed certificates %d times; it must not need a free slot", n)
-	}
+	assert.Zero(t, countIn(h.fake.Recorded()[before:], http.MethodGet, "/certificates"), "resume listed certificates; it must not need a free slot")
 }
 
 func TestHostnameIssueRollbackOutput(t *testing.T) {
@@ -744,9 +617,7 @@ func TestHostnameIssueRollbackOutput(t *testing.T) {
 		return true
 	}
 	code, _, stderr := h.run("hostname", "issue")
-	if code != 1 {
-		t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 1, code, "issue: exit code; stderr:\n%s", stderr)
 	for _, want := range []string{
 		hostA + ": old-1 (enabled=true, status=active) -> new-1 (enabled=true, status=pending_deployment)",
 		hostB + ": old-1 (enabled=true, status=active) -> old-1 (enabled=true, status=active)",
@@ -755,9 +626,7 @@ func TestHostnameIssueRollbackOutput(t *testing.T) {
 		"PUT /zones/{zone}/origin_tls_client_auth/hostnames",
 		"Cloudflare dashboard",
 	} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr)
-		}
+		assert.Contains(t, stderr, want)
 	}
 	rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-")
 	got := make([]string, len(rollback))
@@ -768,20 +637,15 @@ func TestHostnameIssueRollbackOutput(t *testing.T) {
 		"hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
 		"hostname associate --cert-id old-2 --hostname c.example.com",
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("rollback commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
+	require.Equal(t, want, got, "rollback commands")
 
 	h.fake.Hook = nil
 	for _, args := range rollback {
-		if code, _, stderr := h.run(args...); code != 0 {
-			t.Fatalf("%v: exit %d; stderr:\n%s", args, code, stderr)
-		}
+		code, _, stderr := h.run(args...)
+		require.Equal(t, 0, code, "%v: exit code; stderr:\n%s", args, stderr)
 	}
 	for host, want := range map[string]string{hostA: "old-1", hostB: "old-1", hostC: "old-2", hostD: ""} {
-		if got := h.fake.AssocCertID(host); got != want {
-			t.Errorf("%s uses %q after rollback, want %q", host, got, want)
-		}
+		assert.Equal(t, want, h.fake.AssocCertID(host), "%s association after rollback", host)
 	}
 }
 
@@ -811,52 +675,35 @@ func TestHostnameIssueOtherCA(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "issue")
-		if code != 1 {
-			t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
-		}
-		if !strings.Contains(stderr, "AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did") {
-			t.Errorf("rollback lacks the other-CA note for old-1:\n%s", stderr)
-		}
-		if strings.Contains(stderr, "did not sign cur-1") {
-			t.Errorf("rollback has an other-CA note for cur-1:\n%s", stderr)
-		}
+		require.Equal(t, 1, code, "issue: exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did",
+			"rollback lacks the other-CA note for old-1")
+		assert.NotContains(t, stderr, "did not sign cur-1", "rollback has an other-CA note for cur-1")
 		rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-1")
-		if len(rollback) != 1 {
-			t.Fatalf("want one rollback command for old-1, got %q", rollback)
-		}
+		require.Len(t, rollback, 1, "rollback commands for old-1")
 
 		h.fake.Hook = nil
 		code, _, stderr = h.run(rollback[0]...)
-		if code != 1 || !strings.Contains(stderr, "certificate old-1 is not signed by AOP_CA_CERT") {
-			t.Errorf("with the new CA: exit %d; stderr:\n%s", code, stderr)
-		}
-		if got := h.fake.AssocCertID(hostA); got != "new-1" {
-			t.Errorf("%s uses %q after a refused rollback, want new-1", hostA, got)
-		}
+		assert.Equal(t, 1, code, "with the new CA: exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "certificate old-1 is not signed by AOP_CA_CERT", "with the new CA")
+		assert.Equal(t, "new-1", h.fake.AssocCertID(hostA), "%s association after a refused rollback", hostA)
 
 		h.env["AOP_CA_CERT"] = oldCA.certPEM
-		if code, _, stderr := h.run(rollback[0]...); code != 0 {
-			t.Fatalf("with the old CA: exit %d; stderr:\n%s", code, stderr)
-		}
-		if got := h.fake.AssocCertID(hostA); got != "old-1" {
-			t.Errorf("%s uses %q after rollback, want old-1", hostA, got)
-		}
+		code, _, stderr = h.run(rollback[0]...)
+		require.Equal(t, 0, code, "with the old CA: exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "old-1", h.fake.AssocCertID(hostA), "%s association after rollback", hostA)
 	})
 
 	t.Run("prune hint", func(t *testing.T) {
 		h, _ := setup(t)
 		code, stdout, stderr := h.run("hostname", "issue")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
 			"aopctl hostname prune --cert-id cur-1 --hostname a.example.com --hostname b.example.com\n",
 			"AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did",
 			"aopctl hostname prune --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
 		} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("stdout lacks %q:\n%s", want, stdout)
-			}
+			assert.Contains(t, stdout, want)
 		}
 	})
 }
@@ -880,12 +727,9 @@ func TestHostnameAssociate(t *testing.T) {
 		t.Run("refuses "+tt.id, func(t *testing.T) {
 			h := setup(t)
 			code, _, stderr := h.run("hostname", "associate", "--cert-id", tt.id)
-			if code != 1 || !strings.Contains(stderr, tt.want) {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if w := h.fake.Writes(); len(w) != 0 {
-				t.Errorf("sent %d write requests", len(w))
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, tt.want)
+			assert.Empty(t, h.fake.Writes(), "write requests")
 		})
 	}
 
@@ -893,50 +737,34 @@ func TestHostnameAssociate(t *testing.T) {
 		h := setup(t)
 		h.fake.SetAssoc(hostB, "old", new(false))
 		code, _, stderr := h.run("hostname", "associate", "--cert-id", "good")
-		if code != 1 || !strings.Contains(stderr, "b.example.com has AOP disabled") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d write requests", len(w))
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "b.example.com has AOP disabled")
+		assert.Empty(t, h.fake.Writes(), "write requests")
 	})
 
 	t.Run("dry run", func(t *testing.T) {
 		h := setup(t)
 		code, _, stderr := h.run("hostname", "associate", "--cert-id", "good", "--dry-run")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if !strings.Contains(stderr, hostA+": old (enabled=true, status=active) -> good") || !strings.Contains(stderr, hostB+": none -> good") {
-			t.Errorf("stderr:\n%s", stderr)
-		}
-		if w := h.fake.Writes(); len(w) != 0 {
-			t.Errorf("sent %d write requests", len(w))
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, hostA+": old (enabled=true, status=active) -> good")
+		assert.Contains(t, stderr, hostB+": none -> good")
+		assert.Empty(t, h.fake.Writes(), "write requests")
 	})
 
 	t.Run("associates", func(t *testing.T) {
 		h := setup(t)
 		code, stdout, stderr := h.run("hostname", "associate", "--cert-id", "good")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		reqs := h.fake.Recorded()
-		if w := h.fake.Writes(); len(w) != 1 || w[0].Method != http.MethodPut {
-			t.Errorf("writes = %+v, want one PUT", w)
+		if w := h.fake.Writes(); assert.Len(t, w, 1, "writes, want one PUT") {
+			assert.Equal(t, http.MethodPut, w[0].Method, "write method")
 		}
 		afterPut := requestsAfter(reqs, http.MethodPut, "/hostnames")
 		for _, host := range []string{hostA, hostB} {
-			if countIn(afterPut, http.MethodGet, "/hostnames/"+host) < 2 {
-				t.Errorf("did not poll %s until active", host)
-			}
-			if got := h.fake.AssocCertID(host); got != "good" {
-				t.Errorf("%s uses %q", host, got)
-			}
+			assert.GreaterOrEqual(t, countIn(afterPut, http.MethodGet, "/hostnames/"+host), 2, "polls of %s, want it polled until active", host)
+			assert.Equal(t, "good", h.fake.AssocCertID(host), "%s association", host)
 		}
-		if !strings.Contains(stdout, "now use certificate good") {
-			t.Errorf("stdout:\n%s", stdout)
-		}
+		assert.Contains(t, stdout, "now use certificate good")
 	})
 }
 
@@ -948,34 +776,23 @@ func TestHostnameStatus(t *testing.T) {
 	h.fake.SetAssoc(hostA, "mine", new(true))
 	h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 	mineCert, err := aopctl.ParseCertificatePEM(minePEM)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	code, stdout, stderr := h.run("hostname", "status")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	mine, foreign, _ := strings.Cut(strings.SplitN(stdout, "  mine\n", 2)[1], "  foreign\n")
 	for _, want := range []string{"status:    active", "subject:   existing leaf", "key type:  ECDSA P-256", "days left", "signed by AOP_CA_CERT: yes", "used by:   a.example.com", "fingerprint: " + aopctl.Fingerprint(mineCert)} {
-		if !strings.Contains(mine, want) {
-			t.Errorf("mine lacks %q:\n%s", want, mine)
-		}
+		assert.Contains(t, mine, want, "mine")
 	}
-	if !strings.Contains(foreign, "signed by AOP_CA_CERT: no") || !strings.Contains(foreign, "used by:   none of the listed hostnames") {
-		t.Errorf("foreign:\n%s", foreign)
-	}
+	assert.Contains(t, foreign, "signed by AOP_CA_CERT: no", "foreign")
+	assert.Contains(t, foreign, "used by:   none of the listed hostnames", "foreign")
 	for _, want := range []string{hostA + ": mine (enabled=true, status=active)", hostB + ": none", "cannot be discovered"} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout)
-		}
+		assert.Contains(t, stdout, want)
 	}
 
 	delete(h.env, "AOP_CA_CERT")
 	_, stdout, _ = h.run("hostname", "status")
-	if !strings.Contains(stdout, "signed by AOP_CA_CERT: unknown") {
-		t.Errorf("without AOP_CA_CERT:\n%s", stdout)
-	}
+	assert.Contains(t, stdout, "signed by AOP_CA_CERT: unknown", "without AOP_CA_CERT")
 }
 
 // pruneHarness has hostA on "used", and "old" and "spare" unused.
@@ -1004,55 +821,42 @@ func TestHostnamePruneRefusals(t *testing.T) {
 	t.Run("no cert id", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune")
-		if code != 2 || !strings.Contains(stderr, "aopctl hostname status") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 2, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "aopctl hostname status")
 	})
 
 	t.Run("no hostnames", func(t *testing.T) {
 		h := pruneHarness(t)
 		delete(h.env, "AOP_HOSTNAMES")
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 1 || !strings.Contains(stderr, "no hostnames") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := len(h.fake.Recorded()); n != 0 {
-			t.Errorf("sent %d requests", n)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "no hostnames")
+		assert.Empty(t, h.fake.Recorded(), "requests sent")
 	})
 
 	t.Run("in use", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "used", "--yes")
-		if code != 1 || !strings.Contains(stderr, "Refused used: still used by a.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused used: still used by a.example.com")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("other CA", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.AddCert("foreign", newTestCA(t, 3650).issue(t))
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "foreign", "--yes")
-		if code != 1 || !strings.Contains(stderr, "Refused foreign: certificate foreign is not signed by AOP_CA_CERT") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused foreign: certificate foreign is not signed by AOP_CA_CERT")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("not found", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "missing", "--cert-id", "old", "--yes")
-		if code != 1 || !strings.Contains(stderr, "Refused missing: not found") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != "old" {
-			t.Errorf("deleted %v, want old only", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused missing: not found")
+		assert.Equal(t, "old", strings.Join(deletes(h), ","), "deleted, want old only")
 	})
 
 	t.Run("preflight association error", func(t *testing.T) {
@@ -1065,12 +869,9 @@ func TestHostnamePruneRefusals(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 1 || !strings.Contains(stderr, "read association for b.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "read association for b.example.com")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	for _, result := range []string{"null", "{}"} {
@@ -1084,30 +885,19 @@ func TestHostnamePruneRefusals(t *testing.T) {
 				return false
 			}
 			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-			if d := deletes(h); len(d) != 0 {
-				t.Fatalf("deleted %v after an association read without a cert_id", d)
-			}
-			if code != 1 || !strings.Contains(stderr, "read association for b.example.com: GET /zones/{zone}/origin_tls_client_auth/hostnames/b.example.com: HTTP 200: association result has no cert_id") {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
+			require.Empty(t, deletes(h), "deleted after an association read without a cert_id")
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "read association for b.example.com: GET /zones/{zone}/origin_tls_client_auth/hostnames/b.example.com: HTTP 200: association result has no cert_id")
 		})
 	}
 
 	t.Run("only named ids", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != "old" {
-			t.Errorf("deleted %v, want old only", d)
-		}
-		if !strings.Contains(stderr, pruneWarning) {
-			t.Errorf("preview lacks the hostname-scope warning:\n%s", stderr)
-		}
-		if !strings.Contains(stderr, "old  existing leaf, expires ") {
-			t.Errorf("preview lacks the certificate:\n%s", stderr)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "old", strings.Join(deletes(h), ","), "deleted, want old only")
+		assert.Contains(t, stderr, pruneWarning, "preview lacks the hostname-scope warning")
+		assert.Contains(t, stderr, "old  existing leaf, expires ", "preview lacks the certificate")
 	})
 }
 
@@ -1135,12 +925,9 @@ func TestHostnamePruneChangeAfterPreview(t *testing.T) {
 			return false
 		})
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if d := deletes(h); len(d) != 0 {
-			t.Fatalf("deleted %v after the certificate came into use", d)
-		}
-		if code != 1 || !strings.Contains(stderr, "Refused old: now used by b.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Empty(t, deletes(h), "deleted after the certificate came into use")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Refused old: now used by b.example.com")
 	})
 
 	t.Run("re-read fails", func(t *testing.T) {
@@ -1150,12 +937,9 @@ func TestHostnamePruneChangeAfterPreview(t *testing.T) {
 			return true
 		})
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if d := deletes(h); len(d) != 0 {
-			t.Fatalf("deleted %v after the re-read failed", d)
-		}
-		if code != 1 || !strings.Contains(stderr, "Failed old: read association for b.example.com") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Empty(t, deletes(h), "deleted after the re-read failed")
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Failed old: read association for b.example.com")
 	})
 }
 
@@ -1179,19 +963,16 @@ func TestHostnamePruneConfirmation(t *testing.T) {
 			tty := &fakeTTY{Reader: strings.NewReader(tt.answer)}
 			h.openTTY = func() (io.ReadWriteCloser, error) { return tty, nil }
 			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old")
-			if !strings.Contains(tty.prompt.String(), "Delete 1 certificate(s)? [y/N]") {
-				t.Errorf("prompt = %q", tty.prompt.String())
-			}
+			assert.Contains(t, tty.prompt.String(), "Delete 1 certificate(s)? [y/N]", "prompt")
 			d := deletes(h)
 			if tt.delete {
-				if code != 0 || strings.Join(d, ",") != "old" {
-					t.Errorf("exit %d, deleted %v; stderr:\n%s", code, d, stderr)
-				}
+				assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+				assert.Equal(t, "old", strings.Join(d, ","), "deleted")
 				return
 			}
-			if code != 1 || len(d) != 0 || !strings.Contains(stderr, "aborted") {
-				t.Errorf("exit %d, deleted %v; stderr:\n%s", code, d, stderr)
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Empty(t, d, "deleted")
+			assert.Contains(t, stderr, "aborted")
 		})
 	}
 
@@ -1218,42 +999,35 @@ func TestHostnamePruneConfirmation(t *testing.T) {
 		select {
 		case r = <-done:
 		case <-time.After(10 * time.Second):
-			t.Fatal("still waiting for an answer 10s after the interrupt")
+			require.FailNow(t, "still waiting for an answer 10s after the interrupt")
 		}
-		if r.code != 1 || !strings.HasSuffix(r.stderr, "aopctl: aborted: nothing deleted\n") {
-			t.Errorf("exit %d; stderr:\n%s", r.code, r.stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, r.code, "exit code; stderr:\n%s", r.stderr)
+		assert.True(t, strings.HasSuffix(r.stderr, "aopctl: aborted: nothing deleted\n"), "stderr:\n%s", r.stderr)
+		assert.Empty(t, deletes(h), "deleted")
 		select {
 		case <-tty.closed:
 		default:
-			t.Error("left the terminal open")
+			assert.Fail(t, "left the terminal open")
 		}
 	})
 
 	t.Run("no terminal", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old")
-		if code != 1 || !strings.Contains(stderr, "--yes") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "--yes")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("yes skips the prompt", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.openTTY = func() (io.ReadWriteCloser, error) {
-			t.Error("opened the terminal despite --yes")
+			assert.Fail(t, "opened the terminal despite --yes")
 			return nil, io.EOF
 		}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 0 || strings.Join(deletes(h), ",") != "old" {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Equal(t, "old", strings.Join(deletes(h), ","), "deleted")
 	})
 }
 
@@ -1261,21 +1035,17 @@ func TestHostnamePruneCompletion(t *testing.T) {
 	t.Run("pending then gone", func(t *testing.T) {
 		h := pruneHarness(t)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 0 || !strings.Contains(stderr, "Deleted old") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/certificates/old"); n < 3 {
-			t.Errorf("polled %d times, want polling until gone", n)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Deleted old")
+		assert.GreaterOrEqual(t, h.fake.Count(http.MethodGet, "/certificates/old"), 3, "polls, want polling until gone")
 	})
 
 	t.Run("deletion timed out", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion, cftest.StatusDeletionTimedOut}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 1 || !strings.Contains(stderr, "Failed old: the delete failed at Cloudflare: status deletion_timed_out") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Failed old: the delete failed at Cloudflare: status deletion_timed_out")
 	})
 
 	t.Run("mixed results", func(t *testing.T) {
@@ -1288,12 +1058,10 @@ func TestHostnamePruneCompletion(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
-		if code != 1 || !strings.Contains(stderr, "Failed old") || !strings.Contains(stderr, "Deleted spare") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); strings.Join(d, ",") != "old,spare" {
-			t.Errorf("deleted %v, want old,spare", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Failed old")
+		assert.Contains(t, stderr, "Deleted spare")
+		assert.Equal(t, "old,spare", strings.Join(deletes(h), ","), "deleted")
 	})
 
 	t.Run("non-JSON 404 while deleting", func(t *testing.T) {
@@ -1315,15 +1083,10 @@ func TestHostnamePruneCompletion(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
-		if code != 1 || !strings.Contains(stderr, `Failed old: check certificate: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/old: HTTP 404: undecodable response (content type "text/html")`) {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if strings.Contains(stderr, "Deleted old") {
-			t.Errorf("an HTML 404 counted as deleted:\n%s", stderr)
-		}
-		if !strings.Contains(stderr, "Deleted spare") {
-			t.Errorf("a Cloudflare 404 did not count as deleted:\n%s", stderr)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, `Failed old: check certificate: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/old: HTTP 404: undecodable response (content type "text/html")`)
+		assert.NotContains(t, stderr, "Deleted old", "an HTML 404 counted as deleted")
+		assert.Contains(t, stderr, "Deleted spare", "a Cloudflare 404 did not count as deleted")
 	})
 
 	t.Run("non-JSON 404 before deleting", func(t *testing.T) {
@@ -1336,21 +1099,19 @@ func TestHostnamePruneCompletion(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
-		if code != 1 || !strings.Contains(stderr, "read certificate old: ") || strings.Contains(stderr, "Refused old: not found") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if d := deletes(h); len(d) != 0 {
-			t.Errorf("deleted %v", d)
-		}
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "read certificate old: ")
+		assert.NotContains(t, stderr, "Refused old: not found")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	t.Run("already deleted", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.AddCert("done", h.ca.issue(t), cftest.StatusDeleted)
 		code, _, stderr := h.run("hostname", "prune", "--cert-id", "done", "--yes")
-		if code != 0 || !strings.Contains(stderr, "Already deleted: done") || len(deletes(h)) != 0 {
-			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
-		}
+		assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stderr, "Already deleted: done")
+		assert.Empty(t, deletes(h), "deleted")
 	})
 
 	for _, tt := range []struct {
@@ -1371,12 +1132,9 @@ func TestHostnamePruneCompletion(t *testing.T) {
 			// No --yes and no terminal: a certificate that needs no DELETE
 			// needs no confirmation.
 			code, _, stderr := h.run("hostname", "prune", "--cert-id", "pending")
-			if code != tt.code || !strings.Contains(stderr, tt.want) {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if d := deletes(h); len(d) != 0 {
-				t.Errorf("deleted %v", d)
-			}
+			assert.Equal(t, tt.code, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, tt.want)
+			assert.Empty(t, deletes(h), "deleted")
 		})
 	}
 }
@@ -1429,15 +1187,9 @@ func TestBudgetRunsOut(t *testing.T) {
 			h.fake.UploadStatuses = []string{"pending_deployment"}
 			tt.setup(h)
 			code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
-			if code != 1 {
-				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if got, want := errorLine(stderr), "aopctl: timed out waiting for certificate new-1 to become active: last status pending_deployment"; got != want {
-				t.Errorf("error = %q, want %q", got, want)
-			}
-			if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
-				t.Errorf("sent %d PUTs", n)
-			}
+			require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Equal(t, "aopctl: timed out waiting for certificate new-1 to become active: last status pending_deployment", errorLine(stderr), "error")
+			assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		})
 	}
 
@@ -1451,14 +1203,10 @@ func TestBudgetRunsOut(t *testing.T) {
 		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.blockWaits = true
 		code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
-		if code != 1 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		want := "aopctl: timed out waiting for hostnames to use certificate new-1: last observed " +
 			strings.Join([]string{pending(hostA), pending(hostB), pending(hostC), pending(hostD)}, "; ")
-		if got := errorLine(stderr); got != want {
-			t.Errorf("error = %q, want %q", got, want)
-		}
+		assert.Equal(t, want, errorLine(stderr), "error")
 	})
 
 	t.Run("association, budget ends in a read", func(t *testing.T) {
@@ -1488,14 +1236,10 @@ func TestBudgetRunsOut(t *testing.T) {
 			return false
 		}
 		code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
-		if code != 1 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		want := "aopctl: timed out waiting for hostnames to use certificate new-1: last observed " +
 			strings.Join([]string{pending(hostB), pending(hostC), pending(hostD)}, "; ")
-		if got := errorLine(stderr); got != want {
-			t.Errorf("error = %q, want %q", got, want)
-		}
+		assert.Equal(t, want, errorLine(stderr), "error")
 	})
 
 	for _, tt := range []struct {
@@ -1511,12 +1255,9 @@ func TestBudgetRunsOut(t *testing.T) {
 			h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion}
 			tt.setup(h)
 			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes", "--timeout", budget)
-			if code != 1 || !strings.Contains(stderr, "Failed old: timed out waiting for the delete to finish: last status pending_deletion\n") {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if d := deletes(h); strings.Join(d, ",") != "old" {
-				t.Errorf("deleted %v, want old once", d)
-			}
+			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "Failed old: timed out waiting for the delete to finish: last status pending_deletion\n")
+			assert.Equal(t, "old", strings.Join(deletes(h), ","), "deleted, want old once")
 		})
 	}
 }
@@ -1529,28 +1270,20 @@ func TestPagination(t *testing.T) {
 	}
 
 	code, stdout, stderr := h.run("hostname", "status")
-	if code != 0 {
-		t.Fatalf("status: exit %d; stderr:\n%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "Certificates (10 of 10)") || !strings.Contains(stdout, "cert-10") {
-		t.Errorf("status misses later pages:\n%s", stdout)
-	}
+	require.Equal(t, 0, code, "status: exit code; stderr:\n%s", stderr)
+	assert.Contains(t, stdout, "Certificates (10 of 10)", "status misses later pages")
+	assert.Contains(t, stdout, "cert-10", "status misses later pages")
 
 	// cert-10 is alone on page 4, and it fills the last slot.
 	code, _, stderr = h.run("hostname", "issue", "--hostname", "app.example.com")
-	if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
-		t.Errorf("issue: exit %d; stderr:\n%s", code, stderr)
-	}
-	if n := h.fake.Count(http.MethodPost, "/certificates"); n != 0 {
-		t.Errorf("sent %d uploads, want none", n)
-	}
+	assert.Equal(t, 1, code, "issue: exit code; stderr:\n%s", stderr)
+	assert.Contains(t, stderr, "the zone has 10 hostname certificates", "issue")
+	assert.Zero(t, h.fake.Count(http.MethodPost, "/certificates"), "uploads")
 	var pages []string
 	for _, r := range h.fake.Recorded() {
 		if r.Method == http.MethodGet && strings.HasSuffix(r.Path, "/certificates") {
 			pages = append(pages, r.Query)
 		}
 	}
-	if got := strings.Join(pages, " "); got != "page=1 page=2 page=3 page=4 page=1 page=2 page=3 page=4" {
-		t.Errorf("list requests = %s", got)
-	}
+	assert.Equal(t, "page=1 page=2 page=3 page=4 page=1 page=2 page=3 page=4", strings.Join(pages, " "), "list requests")
 }

@@ -3,7 +3,6 @@ package aopctl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/krystal/aopctl/internal/cftest"
 )
@@ -28,15 +30,10 @@ func TestClientSendsBearerToken(t *testing.T) {
 		auth, agent = r.Header.Get("Authorization"), r.Header.Get("User-Agent")
 		cftest.WriteEnvelope(w, http.StatusOK, []any{}, nil)
 	})
-	if _, err := cf.listCerts(context.Background()); err != nil {
-		t.Fatalf("listCerts: %v", err)
-	}
-	if auth != "Bearer "+cftest.Token {
-		t.Errorf("Authorization = %q", auth)
-	}
-	if agent != userAgent {
-		t.Errorf("User-Agent = %q", agent)
-	}
+	_, err := cf.listCerts(context.Background())
+	require.NoError(t, err, "listCerts")
+	assert.Equal(t, "Bearer "+cftest.Token, auth, "Authorization")
+	assert.Equal(t, userAgent, agent, "User-Agent")
 }
 
 func TestClientErrors(t *testing.T) {
@@ -78,18 +75,11 @@ func TestClientErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cf := newTestClient(t, tt.handler)
 			_, err := cf.listCerts(context.Background())
-			if err == nil {
-				t.Fatal("listCerts succeeded, want an error")
-			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("err = %q, want it to contain %q", err, tt.want)
-			}
-			if !strings.HasPrefix(err.Error(), "GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates") {
-				t.Errorf("err does not name the redacted path: %q", err)
-			}
-			if strings.Contains(err.Error(), "secret page") {
-				t.Errorf("err contains the response body: %q", err)
-			}
+			require.Error(t, err, "listCerts succeeded")
+			assert.Contains(t, err.Error(), tt.want)
+			assert.True(t, strings.HasPrefix(err.Error(), "GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates"),
+				"err does not name the redacted path: %q", err)
+			assert.NotContains(t, err.Error(), "secret page", "err contains the response body")
 		})
 	}
 }
@@ -158,18 +148,11 @@ func TestResponseClassification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cf := newTestClient(t, tt.handler)
 			_, err := cf.getCert(context.Background(), "x")
-			if err == nil {
-				t.Fatal("getCert succeeded, want an error")
-			}
-			if !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), cftest.Zone) {
-				t.Errorf("err = %q, want it to contain %q and not the zone ID", err, tt.want)
-			}
-			if got := isTransient(err); got != tt.transient {
-				t.Errorf("isTransient = %v, want %v", got, tt.transient)
-			}
-			if got := isNotFound(err); got != tt.notFound {
-				t.Errorf("isNotFound = %v, want %v", got, tt.notFound)
-			}
+			require.Error(t, err, "getCert succeeded")
+			assert.Contains(t, err.Error(), tt.want)
+			assert.NotContains(t, err.Error(), cftest.Zone, "err contains the zone ID")
+			assert.Equal(t, tt.transient, isTransient(err), "isTransient")
+			assert.Equal(t, tt.notFound, isNotFound(err), "isNotFound")
 		})
 	}
 }
@@ -179,13 +162,9 @@ func TestResponseClassification(t *testing.T) {
 func TestErrorsRedactSecrets(t *testing.T) {
 	ca := newTestCA(t, 3650)
 	leaf, key, err := createLeaf(ca.cert, ca.key, "leaf", KeyTypeECP256, 30, time.Now())
-	if err != nil {
-		t.Fatalf("createLeaf: %v", err)
-	}
+	require.NoError(t, err, "createLeaf")
 	keyPEM, err := EncodePrivateKeyPEM(key)
-	if err != nil {
-		t.Fatalf("encodeKeyPEM: %v", err)
-	}
+	require.NoError(t, err, "encodeKeyPEM")
 
 	cf := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -202,33 +181,23 @@ func TestErrorsRedactSecrets(t *testing.T) {
 		})
 	})
 	_, err = cf.uploadCert(context.Background(), EncodeCertificatePEM(leaf), keyPEM)
-	if err == nil {
-		t.Fatal("uploadCert succeeded, want an error")
-	}
+	require.Error(t, err, "uploadCert succeeded")
 	msg := err.Error()
 
 	for _, leak := range []string{cftest.Zone, "suffix7", "AAAA", "PRIVATE KEY", "BEGIN"} {
-		if strings.Contains(msg, leak) {
-			t.Errorf("error contains %q: %s", leak, msg)
-		}
+		assert.NotContains(t, msg, leak)
 	}
 	keyBody := strings.Join(strings.Split(strings.TrimSpace(keyPEM), "\n")[1:], "")
 	for i := 0; i+12 <= len(keyBody); i++ {
-		if strings.Contains(msg, keyBody[i:i+12]) {
-			t.Fatalf("error contains part of the key (%q): %s", keyBody[i:i+12], msg)
-		}
+		require.NotContains(t, msg, keyBody[i:i+12], "error contains part of the key")
 	}
-	if !strings.Contains(msg, "[redacted PEM]") || !strings.Contains(msg, "token=[redacted]") || !strings.Contains(msg, "zone=[redacted]") {
-		t.Errorf("error lacks the redaction markers: %s", msg)
+	for _, marker := range []string{"[redacted PEM]", "token=[redacted]", "zone=[redacted]"} {
+		assert.Contains(t, msg, marker, "error lacks a redaction marker")
 	}
 	var apiErr *apiError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("err is %T, want *apiError", err)
-	}
+	require.ErrorAs(t, err, &apiErr)
 	for _, m := range apiErr.messages {
-		if len(m) > maxMessageBytes {
-			t.Errorf("message has %d bytes, want at most %d", len(m), maxMessageBytes)
-		}
+		assert.LessOrEqual(t, len(m), maxMessageBytes, "message bytes")
 	}
 }
 
@@ -237,21 +206,17 @@ func TestErrorsKeepBenignMessages(t *testing.T) {
 		cftest.WriteAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
 	})
 	_, err := cf.uploadCert(context.Background(), "cert", "key")
-	if err == nil || !strings.Contains(err.Error(), "(code 1400): missing leaf certificate") {
-		t.Errorf("err = %v", err)
-	}
+	assert.ErrorContains(t, err, "(code 1400): missing leaf certificate")
 	var apiErr *apiError
-	if !errors.As(err, &apiErr) || !apiErr.decoded {
-		t.Errorf("err is not a decoded API error: %#v", err)
+	if assert.ErrorAs(t, err, &apiErr) {
+		assert.True(t, apiErr.decoded, "err is not a decoded API error: %#v", err)
 	}
 }
 
 func TestSanitizeOrder(t *testing.T) {
 	cf := &cfClient{token: cftest.Token, zoneID: cftest.Zone}
 	got := cf.sanitize("Bearer " + cftest.Token + "; zone " + cftest.Zone + "; ok")
-	if want := "Bearer [redacted]; zone [redacted]; ok"; got != want {
-		t.Errorf("sanitize = %q, want %q", got, want)
-	}
+	assert.Equal(t, "Bearer [redacted]; zone [redacted]; ok", got, "sanitize")
 }
 
 func TestStalledRequest(t *testing.T) {
@@ -271,30 +236,25 @@ func TestStalledRequest(t *testing.T) {
 	select {
 	case <-received:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the server did not receive the request")
+		require.FailNow(t, "the server did not receive the request")
 	}
 	cancel()
 	select {
 	case err := <-errc:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("err = %v, want context.Canceled", err)
-		}
-		if strings.Contains(err.Error(), cftest.Zone) {
-			t.Errorf("err contains the zone ID: %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotContains(t, err.Error(), cftest.Zone, "err contains the zone ID")
 	case <-time.After(10 * time.Second):
-		t.Fatal("the request did not return after its context was cancelled")
+		require.FailNow(t, "the request did not return after its context was cancelled")
 	}
 }
 
 func TestAPIMessagesTolerateShapes(t *testing.T) {
 	var env envelope
 	data := `{"success":false,"errors":[{"code":7,"message":"a"},"b",42],"messages":{"odd":true},"result":null}`
-	if err := json.Unmarshal([]byte(data), &env); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(env.Errors) != 2 || env.Errors[0].Code != 7 || env.Errors[1].Message != "b" {
-		t.Errorf("errors = %+v", env.Errors)
+	require.NoError(t, json.Unmarshal([]byte(data), &env), "decode")
+	if assert.Len(t, env.Errors, 2) {
+		assert.Equal(t, 7, env.Errors[0].Code)
+		assert.Equal(t, "b", env.Errors[1].Message)
 	}
 }
 
@@ -305,14 +265,9 @@ func TestZoneCertPathGuards(t *testing.T) {
 	cf := newTestClient(t, func(http.ResponseWriter, *http.Request) { requests++ })
 	ctx := context.Background()
 	for _, id := range []string{"settings", "hostnames", "../settings", "", strings.Repeat("a", 31)} {
-		if _, err := cf.getZoneCert(ctx, id); err == nil {
-			t.Errorf("getZoneCert(%q) succeeded", id)
-		}
-		if err := cf.deleteZoneCert(ctx, id); err == nil {
-			t.Errorf("deleteZoneCert(%q) succeeded", id)
-		}
+		_, err := cf.getZoneCert(ctx, id)
+		assert.Error(t, err, "getZoneCert(%q)", id)
+		assert.Error(t, cf.deleteZoneCert(ctx, id), "deleteZoneCert(%q)", id)
 	}
-	if requests != 0 {
-		t.Errorf("sent %d requests, want none", requests)
-	}
+	assert.Zero(t, requests, "requests sent")
 }

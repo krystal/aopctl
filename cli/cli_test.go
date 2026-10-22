@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/krystal/aopctl/aopctl"
 	"github.com/krystal/aopctl/internal/cftest"
@@ -35,13 +37,9 @@ type testCA struct {
 func newTestCA(t *testing.T, days int) *testCA {
 	t.Helper()
 	cert, key, err := aopctl.CreateCA(aopctl.CARequest{CommonName: "Test AOP CA", KeyType: aopctl.KeyTypeECP256, Days: days})
-	if err != nil {
-		t.Fatalf("create CA: %v", err)
-	}
+	require.NoError(t, err, "create CA")
 	keyPEM, err := aopctl.EncodePrivateKeyPEM(key)
-	if err != nil {
-		t.Fatalf("encode CA key: %v", err)
-	}
+	require.NoError(t, err, "encode CA key")
 	return &testCA{cert: cert, key: key, certPEM: aopctl.EncodeCertificatePEM(cert), keyPEM: keyPEM}
 }
 
@@ -225,16 +223,12 @@ func TestUsage(t *testing.T) {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			h := newHarness(t)
 			code, stdout, stderr := h.run(tt.args...)
-			if code != tt.code {
-				t.Fatalf("exit %d, want %d; stderr:\n%s", code, tt.code, stderr)
-			}
+			require.Equal(t, tt.code, code, "exit code; stderr:\n%s", stderr)
 			for _, out := range []struct{ name, got, want string }{{"stdout", stdout, tt.stdout}, {"stderr", stderr, tt.stderr}} {
-				if out.want == "" && out.got != "" {
-					t.Errorf("%s = %q, want empty", out.name, out.got)
+				if out.want == "" {
+					assert.Empty(t, out.got, out.name)
 				}
-				if !strings.Contains(out.got, out.want) {
-					t.Errorf("%s lacks %q:\n%s", out.name, out.want, out.got)
-				}
+				assert.Contains(t, out.got, out.want, out.name)
 			}
 		})
 	}
@@ -265,18 +259,10 @@ func TestCommandLineErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			code, stdout, stderr := h.run(tt.args...)
-			if code != 2 {
-				t.Errorf("exit %d, want 2", code)
-			}
-			if stderr != tt.stderr {
-				t.Errorf("stderr = %q, want %q", stderr, tt.stderr)
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-			if n := len(h.fake.Recorded()); n != 0 {
-				t.Errorf("sent %d requests, want none", n)
-			}
+			assert.Equal(t, 2, code, "exit code")
+			assert.Equal(t, tt.stderr, stderr, "stderr")
+			assert.Empty(t, stdout, "stdout")
+			assert.Empty(t, h.fake.Recorded(), "requests sent")
 		})
 	}
 }
@@ -289,13 +275,10 @@ func TestMissingCommandHelp(t *testing.T) {
 			args := strings.Fields(group)
 			h := newHarness(t)
 			code, stdout, stderr := h.run(args...)
-			if code != 2 || stdout != "" {
-				t.Errorf("exit %d, stdout %q; want 2 and empty", code, stdout)
-			}
+			assert.Equal(t, 2, code, "exit code")
+			assert.Empty(t, stdout, "stdout")
 			_, help, _ := h.run(append(args, "--help")...)
-			if stderr != help {
-				t.Errorf("stderr = %q, want the --help output %q", stderr, help)
-			}
+			assert.Equal(t, help, stderr, "stderr, want the --help output")
 		})
 	}
 }
@@ -329,12 +312,9 @@ func TestDryRunShorthand(t *testing.T) {
 			h := tt.setup(t)
 			noPrompt(t, h)
 			code, _, stderr := h.run(tt.args...)
-			if code != 0 || !strings.Contains(stderr, "Dry run: nothing changed.") {
-				t.Errorf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if w := h.fake.Writes(); len(w) != 0 {
-				t.Errorf("dry run sent %d write requests", len(w))
-			}
+			assert.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+			assert.Contains(t, stderr, "Dry run: nothing changed.")
+			assert.Empty(t, h.fake.Writes(), "dry run write requests")
 		})
 	}
 }
@@ -343,13 +323,9 @@ func TestHostnameFlagLists(t *testing.T) {
 	h := newHarness(t)
 	h.env["AOP_HOSTNAMES"] = hostD
 	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", hostA+","+hostB, "--hostname", hostC)
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	want := "Hostnames:\n  " + hostA + ": none -> new\n  " + hostB + ": none -> new\n  " + hostC + ": none -> new\nDry run"
-	if !strings.Contains(stderr, want) {
-		t.Errorf("stderr lacks %q:\n%s", want, stderr)
-	}
+	assert.Contains(t, stderr, want)
 }
 
 func TestEmptyHostnameFlag(t *testing.T) {
@@ -364,15 +340,9 @@ func TestEmptyHostnameFlag(t *testing.T) {
 			h := newHarness(t)
 			h.env["AOP_HOSTNAMES"] = hostA
 			code, _, stderr := h.run(args...)
-			if code != 1 {
-				t.Errorf("exit %d, want 1", code)
-			}
-			if want := "aopctl: no hostnames: set AOP_HOSTNAMES or pass --hostname\n"; stderr != want {
-				t.Errorf("stderr = %q, want %q", stderr, want)
-			}
-			if n := len(h.fake.Recorded()); n != 0 {
-				t.Errorf("sent %d requests, want none", n)
-			}
+			assert.Equal(t, 1, code, "exit code")
+			assert.Equal(t, "aopctl: no hostnames: set AOP_HOSTNAMES or pass --hostname\n", stderr, "stderr")
+			assert.Empty(t, h.fake.Recorded(), "requests sent")
 		})
 	}
 
@@ -380,12 +350,9 @@ func TestEmptyHostnameFlag(t *testing.T) {
 		h := newHarness(t)
 		h.env["AOP_HOSTNAMES"] = hostA
 		code, stdout, stderr := h.run("hostname", "status", "--hostname", "")
-		if code != 0 {
-			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-		}
-		if n := h.fake.Count(http.MethodGet, "/hostnames/"+hostA); n != 0 || strings.Contains(stdout, "Hostnames:") {
-			t.Errorf("reported AOP_HOSTNAMES (%d reads):\n%s", n, stdout)
-		}
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Zero(t, h.fake.Count(http.MethodGet, "/hostnames/"+hostA), "reads of AOP_HOSTNAMES")
+		assert.NotContains(t, stdout, "Hostnames:", "reported AOP_HOSTNAMES")
 	})
 }
 
@@ -408,18 +375,10 @@ func TestCompletion(t *testing.T) {
 			h := newHarness(t)
 			h.env["AOP_HOSTNAMES"] = hostA + ", " + hostB + "\n" + hostC
 			code, stdout, stderr := h.run(append([]string{"__complete"}, tt.args...)...)
-			if code != 0 {
-				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-			}
-			if !strings.HasSuffix(stdout, ":4\n") {
-				t.Errorf("directive is not 4, no file completion:\n%s", stdout)
-			}
-			if !strings.Contains(stdout, tt.want) {
-				t.Errorf("stdout = %q, want %q", stdout, tt.want)
-			}
-			if n := len(h.fake.Recorded()); n != 0 {
-				t.Errorf("sent %d requests, want none", n)
-			}
+			require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+			assert.True(t, strings.HasSuffix(stdout, ":4\n"), "directive is not 4, no file completion:\n%s", stdout)
+			assert.Contains(t, stdout, tt.want, "stdout")
+			assert.Empty(t, h.fake.Recorded(), "requests sent")
 		})
 	}
 }
@@ -436,44 +395,32 @@ func TestMounted(t *testing.T) {
 			return true
 		}
 		code, _, stderr := h.runMounted("hostname", "issue")
-		if code != 1 {
-			t.Fatalf("exit %d, want 1; stderr:\n%s", code, stderr)
-		}
+		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
 			"To resume, run:\n  othertool aopctl hostname associate --cert-id new-1 --hostname",
 			"To roll back, run:\n  othertool aopctl hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
 		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, stderr)
-			}
+			assert.Contains(t, stderr, want)
 		}
 	})
 
 	t.Run("usage error", func(t *testing.T) {
 		h := newHarness(t)
 		code, _, stderr := h.runMounted("hostname", "status", "--bogus")
-		if code != 2 {
-			t.Errorf("exit %d, want 2", code)
-		}
-		if want := "aopctl: unknown flag: --bogus\nRun 'othertool aopctl hostname status --help' for usage.\n"; stderr != want {
-			t.Errorf("stderr = %q, want %q", stderr, want)
-		}
+		assert.Equal(t, 2, code, "exit code")
+		assert.Equal(t, "aopctl: unknown flag: --bogus\nRun 'othertool aopctl hostname status --help' for usage.\n", stderr, "stderr")
 	})
 
 	t.Run("missing command", func(t *testing.T) {
 		h := newHarness(t)
 		code, stdout, stderr := h.runMounted("hostname")
-		if code != 2 {
-			t.Errorf("exit %d, want 2", code)
-		}
+		assert.Equal(t, 2, code, "exit code")
 		// The host prints the error after the help.
-		if !strings.HasPrefix(stderr, "Manage per-hostname AOP certificates\n\nUsage:\n  othertool aopctl hostname [flags]") ||
-			!strings.HasSuffix(stderr, " for more information about a command.\naopctl: othertool aopctl hostname requires a subcommand\n") {
-			t.Errorf("stderr is not the help and the error:\n%s", stderr)
-		}
-		if stdout != "" {
-			t.Errorf("stdout = %q, want empty", stdout)
-		}
+		assert.True(t, strings.HasPrefix(stderr, "Manage per-hostname AOP certificates\n\nUsage:\n  othertool aopctl hostname [flags]"),
+			"stderr is not the help and the error:\n%s", stderr)
+		assert.True(t, strings.HasSuffix(stderr, " for more information about a command.\naopctl: othertool aopctl hostname requires a subcommand\n"),
+			"stderr is not the help and the error:\n%s", stderr)
+		assert.Empty(t, stdout, "stdout")
 	})
 }
 
@@ -489,21 +436,16 @@ func TestMountedReuse(t *testing.T) {
 		return h.capture(host, func() int { return ExitCode(host.Execute()) })
 	}
 
-	if code, _, _ := run("hostname"); code != 2 {
-		t.Fatalf("hostname: exit %d, want 2", code)
-	}
+	code, _, _ := run("hostname")
+	require.Equal(t, 2, code, "hostname: exit code")
 	// capture gives each run new writers.
 	code, stdout, stderr := run("hostname", "rotate")
-	if want := "aopctl: unknown command \"rotate\" for \"othertool aopctl hostname\"\nRun 'othertool aopctl hostname --help' for usage.\n"; code != 2 || stderr != want {
-		t.Errorf("hostname rotate: exit %d, stderr %q; want 2 and %q", code, stderr, want)
-	}
-	if stdout != "" {
-		t.Errorf("hostname rotate: stdout = %q, want empty", stdout)
-	}
+	assert.Equal(t, 2, code, "hostname rotate: exit code")
+	assert.Equal(t, "aopctl: unknown command \"rotate\" for \"othertool aopctl hostname\"\nRun 'othertool aopctl hostname --help' for usage.\n", stderr, "hostname rotate: stderr")
+	assert.Empty(t, stdout, "hostname rotate: stdout")
 	code, stdout, _ = run("hostname", "--help")
-	if code != 0 || !strings.Contains(stdout, "Usage:\n  othertool aopctl hostname [flags]") {
-		t.Errorf("hostname --help: exit %d, stdout %q; want 0 and the help", code, stdout)
-	}
+	assert.Equal(t, 0, code, "hostname --help: exit code")
+	assert.Contains(t, stdout, "Usage:\n  othertool aopctl hostname [flags]", "hostname --help: stdout")
 }
 
 // TestContext checks that commands stop when their context is cancelled.
@@ -512,22 +454,15 @@ func TestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	code, stdout, stderr := h.runContext(ctx, "hostname", "issue")
-	if code != 1 || !strings.Contains(stderr, "context canceled") {
-		t.Errorf("exit %d, want 1 after the cancellation; stderr:\n%s", code, stderr)
-	}
-	if stdout != "" {
-		t.Errorf("stdout = %q, want empty", stdout)
-	}
-	if w := h.fake.Writes(); len(w) != 0 {
-		t.Errorf("sent %d write requests, want none", len(w))
-	}
+	assert.Equal(t, 1, code, "exit code after the cancellation; stderr:\n%s", stderr)
+	assert.Contains(t, stderr, "context canceled")
+	assert.Empty(t, stdout, "stdout")
+	assert.Empty(t, h.fake.Writes(), "write requests sent")
 }
 
 func TestIsTerminal(t *testing.T) {
 	file, err := os.Create(filepath.Join(t.TempDir(), "file"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer file.Close()
 	for _, tt := range []struct {
 		name string
@@ -538,9 +473,7 @@ func TestIsTerminal(t *testing.T) {
 		{"regular file", file},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if isTerminal(tt.v) {
-				t.Error("isTerminal = true, want false")
-			}
+			assert.False(t, isTerminal(tt.v), "isTerminal")
 		})
 	}
 }
@@ -550,28 +483,16 @@ func TestDefaultKeyTypes(t *testing.T) {
 	h.now = time.Now().Truncate(time.Second)
 
 	code, stdout, stderr := h.run("ca", "create")
-	if code != 0 {
-		t.Fatalf("ca create: exit %d; stderr:\n%s", code, stderr)
-	}
+	require.Equal(t, 0, code, "ca create: exit code; stderr:\n%s", stderr)
 	cert, key := parseItemPair(t, stdout)
-	if got := describeKey(key.Public()); got != "ECDSA P-256" {
-		t.Errorf("ca create key type = %s, want ECDSA P-256", got)
-	}
-	if got := cert.NotAfter.Sub(cert.NotBefore); got != 3650*24*time.Hour {
-		t.Errorf("ca create validity = %s, want 3650 days", got)
-	}
+	assert.Equal(t, "ECDSA P-256", describeKey(key.Public()), "ca create key type")
+	assert.Equal(t, 3650*24*time.Hour, cert.NotAfter.Sub(cert.NotBefore), "ca create validity")
 
 	code, _, stderr = h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
-	if code != 0 {
-		t.Fatalf("hostname issue: exit %d; stderr:\n%s", code, stderr)
-	}
-	if !strings.Contains(stderr, "key type:    ECDSA P-256") {
-		t.Errorf("hostname issue plan does not show a P-256 key:\n%s", stderr)
-	}
+	require.Equal(t, 0, code, "hostname issue: exit code; stderr:\n%s", stderr)
+	assert.Contains(t, stderr, "key type:    ECDSA P-256", "hostname issue plan does not show a P-256 key")
 	expires := h.now.UTC().Add(-time.Hour).AddDate(0, 0, 365).Format(time.RFC3339)
-	if !strings.Contains(stderr, "expires:     "+expires) {
-		t.Errorf("hostname issue plan does not expire after 365 days (%s):\n%s", expires, stderr)
-	}
+	assert.Contains(t, stderr, "expires:     "+expires, "hostname issue plan does not expire after 365 days")
 }
 
 func TestUsageErrors(t *testing.T) {
@@ -608,15 +529,9 @@ func TestUsageErrors(t *testing.T) {
 			h := newHarness(t)
 			h.env["AOP_HOSTNAMES"] = tt.env
 			code, stdout, stderr := h.run(tt.args...)
-			if code != 2 {
-				t.Fatalf("exit %d, want 2; stderr:\n%s", code, stderr)
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-			if n := len(h.fake.Recorded()); n != 0 {
-				t.Errorf("sent %d requests, want none", n)
-			}
+			require.Equal(t, 2, code, "exit code; stderr:\n%s", stderr)
+			assert.Empty(t, stdout, "stdout")
+			assert.Empty(t, h.fake.Recorded(), "requests sent")
 		})
 	}
 }
@@ -629,12 +544,8 @@ func TestHundredHostnamesAccepted(t *testing.T) {
 	}
 	h.env["AOP_HOSTNAMES"] = strings.Join(hosts, " ")
 	code, _, stderr := h.run("hostname", "issue", "--dry-run")
-	if code != 0 {
-		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
-	}
-	if n := h.fake.Count(http.MethodGet, "/hostnames/h99.example.com"); n != 1 {
-		t.Errorf("read the 100th hostname %d times, want 1", n)
-	}
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/hostnames/h99.example.com"), "reads of the 100th hostname")
 }
 
 func hostnameArgs(hosts []string) []string {
@@ -677,17 +588,12 @@ func TestHostnames(t *testing.T) {
 			a := &app{getenv: func(string) string { return tt.env }}
 			got, err := a.hostnames(tt.flags)
 			if tt.err {
-				if _, ok := errors.AsType[*usageError](err); !ok {
-					t.Fatalf("err = %v, want a usage error", err)
-				}
+				var usageErr *usageError
+				require.ErrorAs(t, err, &usageErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("hostnames: %v", err)
-			}
-			if strings.Join(got, " ") != strings.Join(tt.want, " ") {
-				t.Errorf("hostnames = %q, want %q", got, tt.want)
-			}
+			require.NoError(t, err, "hostnames")
+			assert.Equal(t, strings.Join(tt.want, " "), strings.Join(got, " "), "hostnames")
 		})
 	}
 }
@@ -699,15 +605,10 @@ func TestVersion(t *testing.T) {
 			cmd := newRootCmd(&app{version: "v1.2.3"})
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&stderr)
-			if code := execute(context.Background(), cmd, []string{arg}); code != 0 {
-				t.Fatalf("exit %d, want 0; stderr:\n%s", code, stderr.String())
-			}
-			if got := stdout.String(); got != "aopctl v1.2.3\n" {
-				t.Errorf("stdout = %q, want %q", got, "aopctl v1.2.3\n")
-			}
-			if stderr.Len() > 0 {
-				t.Errorf("stderr = %q, want empty", stderr.String())
-			}
+			code := execute(context.Background(), cmd, []string{arg})
+			require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr.String())
+			assert.Equal(t, "aopctl v1.2.3\n", stdout.String(), "stdout")
+			assert.Empty(t, stderr.String(), "stderr")
 		})
 	}
 }
@@ -744,9 +645,7 @@ func TestResolveVersion(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveVersion(tt.buildVersion, tt.info); got != tt.want {
-				t.Errorf("resolveVersion = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, resolveVersion(tt.buildVersion, tt.info), "resolveVersion")
 		})
 	}
 }
