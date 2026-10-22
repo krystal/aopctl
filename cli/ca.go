@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"crypto"
@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/krystal/aopctl/aopctl"
 )
@@ -41,29 +43,51 @@ type opField struct {
 	Value   string `json:"value"`
 }
 
-func (a *app) caCreate(args []string) error {
-	fs := a.flagSet("ca create", "[flags] | op item create --vault <vault> -")
-	name := fs.String("name", "aopctl AOP CA", "CA common name")
-	keyType := fs.String("key-type", string(aopctl.KeyTypeECP256), "key type: "+string(aopctl.KeyTypeECP256)+" or "+string(aopctl.KeyTypeRSA3072))
-	days := fs.Int("days", 3650, "validity in days")
-	title := fs.String("title", "", "1Password item title (default: the common name)")
-	if err := parseFlags(fs, args); err != nil {
+func newCACmd(a *app) *cobra.Command {
+	return newGroupCmd("ca", "Create or describe the client CA", newCACreateCmd(a), newCAShowCmd(a))
+}
+
+type caCreateOptions struct {
+	name    string
+	keyType string
+	days    int
+	title   string
+}
+
+func newCACreateCmd(a *app) *cobra.Command {
+	o := &caCreateOptions{}
+	cmd := &cobra.Command{
+		Use:   "create [flags] | op item create --vault <vault> -",
+		Short: "Create a CA and print a 1Password item template",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.caCreate(cmd, o)
+		},
+	}
+	cmd.Flags().StringVar(&o.name, "name", "aopctl AOP CA", "CA common name")
+	keyTypeFlag(cmd, &o.keyType)
+	cmd.Flags().IntVar(&o.days, "days", 3650, "validity in days")
+	cmd.Flags().StringVar(&o.title, "title", "", "1Password item title (default: the common name)")
+	return cmd
+}
+
+func (a *app) caCreate(cmd *cobra.Command, o *caCreateOptions) error {
+	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	if err := validateKeyType(o.keyType); err != nil {
 		return err
 	}
-	if err := validateKeyType(*keyType); err != nil {
+	if err := validateDays(o.days); err != nil {
 		return err
 	}
-	if err := validateDays(*days); err != nil {
-		return err
-	}
-	if a.stdoutIsTerminal() {
+	if a.stdoutIsTerminal(stdout) {
 		return errors.New("refusing to write the CA key to a terminal: pipe the output to \"op item create --vault <vault> -\"")
 	}
-	if *title == "" {
-		*title = *name
+	title := o.title
+	if title == "" {
+		title = o.name
 	}
 
-	cert, key, err := aopctl.CreateCA(aopctl.CARequest{CommonName: *name, KeyType: aopctl.KeyType(*keyType), Days: *days, Now: a.now()})
+	cert, key, err := aopctl.CreateCA(aopctl.CARequest{CommonName: o.name, KeyType: aopctl.KeyType(o.keyType), Days: o.days, Now: a.now()})
 	if err != nil {
 		return err
 	}
@@ -74,7 +98,7 @@ func (a *app) caCreate(args []string) error {
 	fp := aopctl.Fingerprint(cert)
 	expires := cert.NotAfter.UTC().Format(time.RFC3339)
 	item := opItem{
-		Title:    *title,
+		Title:    title,
 		Category: "SECURE_NOTE",
 		Fields: []opField{
 			{
@@ -86,13 +110,13 @@ func (a *app) caCreate(args []string) error {
 			{ID: "fingerprint_sha256", Type: "STRING", Label: "fingerprint_sha256", Value: fp},
 		},
 	}
-	enc := json.NewEncoder(a.stdout)
+	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(item); err != nil {
 		return fmt.Errorf("write item template: %w", err)
 	}
 
-	fmt.Fprintf(a.stderr, `Created CA %q (%s), expires %s.
+	fmt.Fprintf(stderr, `Created CA %q (%s), expires %s.
 SHA-256 fingerprint: %s
 
 Next steps:
@@ -101,32 +125,48 @@ Next steps:
   2. Pin the fingerprint in traefik-plugin-cloudflare-origin's
      clientCertFingerprints.
   3. Create the Traefik Secret from the certificate with
-     op read "op://<vault>/<item>/ca_cert" | aopctl ca show --secret <name>
-`, *name, describeKey(cert.PublicKey), expires, fp)
+     op read "op://<vault>/<item>/ca_cert" | %s ca show --secret <name>
+`, o.name, describeKey(cert.PublicKey), expires, fp, a.commandPath())
 	return nil
 }
 
-func (a *app) caShow(args []string) error {
-	fs := a.flagSet("ca show", "[flags] < ca.crt")
-	secret := fs.String("secret", "", "print only a Kubernetes Secret with this name holding the certificate")
-	namespace := fs.String("namespace", "", "namespace for the Secret (requires --secret)")
-	if err := parseFlags(fs, args); err != nil {
-		return err
+type caShowOptions struct {
+	secret    string
+	namespace string
+}
+
+func newCAShowCmd(a *app) *cobra.Command {
+	o := &caShowOptions{}
+	cmd := &cobra.Command{
+		Use:   "show [flags] < ca.crt",
+		Short: "Describe the CA certificate read from stdin",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.caShow(cmd, o)
+		},
 	}
-	if *namespace != "" && *secret == "" {
+	cmd.Flags().StringVar(&o.secret, "secret", "", "print only a Kubernetes Secret with this name holding the certificate")
+	cmd.Flags().StringVar(&o.namespace, "namespace", "", "namespace for the Secret (requires --secret)")
+	return cmd
+}
+
+func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
+	stdin, stdout, stderr := cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+	secret, namespace := o.secret, o.namespace
+	if namespace != "" && secret == "" {
 		return usagef("--namespace requires --secret")
 	}
-	if *secret != "" && (len(*secret) > 253 || !secretNamePattern.MatchString(*secret)) {
-		return usagef("invalid --secret %q: want a Kubernetes object name", *secret)
+	if secret != "" && (len(secret) > 253 || !secretNamePattern.MatchString(secret)) {
+		return usagef("invalid --secret %q: want a Kubernetes object name", secret)
 	}
-	if *namespace != "" && (len(*namespace) > 63 || !namespacePattern.MatchString(*namespace)) {
-		return usagef("invalid --namespace %q: want a Kubernetes namespace name", *namespace)
+	if namespace != "" && (len(namespace) > 63 || !namespacePattern.MatchString(namespace)) {
+		return usagef("invalid --namespace %q: want a Kubernetes namespace name", namespace)
 	}
-	if a.stdinIsTerminal() {
+	if a.stdinIsTerminal(stdin) {
 		return errors.New("ca show reads the CA certificate PEM from stdin: pipe it in, for example with op read")
 	}
 
-	data, err := io.ReadAll(io.LimitReader(a.stdin, maxCertInput))
+	data, err := io.ReadAll(io.LimitReader(stdin, maxCertInput))
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
@@ -136,21 +176,21 @@ func (a *app) caShow(args []string) error {
 	}
 	warnings := aopctl.CAProfileWarnings(cert)
 
-	if *secret != "" {
+	if secret != "" {
 		for _, w := range warnings {
-			fmt.Fprintf(a.stderr, "warning: %s\n", w)
+			fmt.Fprintf(stderr, "warning: %s\n", w)
 		}
-		writeSecretManifest(a.stdout, *secret, *namespace, aopctl.EncodeCertificatePEM(cert))
+		writeSecretManifest(stdout, secret, namespace, aopctl.EncodeCertificatePEM(cert))
 		return nil
 	}
 
-	fmt.Fprintf(a.stdout, "Subject:     %s\n", cert.Subject)
-	fmt.Fprintf(a.stdout, "Fingerprint: %s\n", aopctl.Fingerprint(cert))
-	fmt.Fprintf(a.stdout, "Not before:  %s\n", cert.NotBefore.UTC().Format(time.RFC3339))
-	fmt.Fprintf(a.stdout, "Not after:   %s\n", cert.NotAfter.UTC().Format(time.RFC3339))
-	fmt.Fprintf(a.stdout, "Key type:    %s\n", describeKey(cert.PublicKey))
+	fmt.Fprintf(stdout, "Subject:     %s\n", cert.Subject)
+	fmt.Fprintf(stdout, "Fingerprint: %s\n", aopctl.Fingerprint(cert))
+	fmt.Fprintf(stdout, "Not before:  %s\n", cert.NotBefore.UTC().Format(time.RFC3339))
+	fmt.Fprintf(stdout, "Not after:   %s\n", cert.NotAfter.UTC().Format(time.RFC3339))
+	fmt.Fprintf(stdout, "Key type:    %s\n", describeKey(cert.PublicKey))
 	for _, w := range warnings {
-		fmt.Fprintf(a.stdout, "Warning:     %s\n", w)
+		fmt.Fprintf(stdout, "Warning:     %s\n", w)
 	}
 	return nil
 }

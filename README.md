@@ -19,8 +19,9 @@ your hostnames apart from requests Cloudflare proxies for anyone else. The
 plugin README's [security model][plugin-security] explains why neither
 Cloudflare's IP ranges nor its shared AOP certificate can do that.
 
-`aopctl` reads secrets from environment variables, never writes a key to disk,
-and uses only the Go standard library.
+`aopctl` reads secrets from environment variables and never writes a key to
+disk. The `aopctl` library package uses only the Go standard library, and the
+command line uses [cobra](https://github.com/spf13/cobra).
 
 [plugin]: https://github.com/krystal/traefik-plugin-cloudflare-origin
 [plugin-security]: https://github.com/krystal/traefik-plugin-cloudflare-origin#security-model
@@ -102,7 +103,27 @@ aopctl version
 
 Release archives and `go install github.com/krystal/aopctl@<version>` report
 the release, for example `aopctl v0.1.0`. A build from a checkout reports the
-version Go records for it, or `(devel)`.
+version Go records for it, or `(devel)`. `aopctl --version` and `aopctl -v`
+print the same.
+
+### Shell completion
+
+`aopctl completion <shell>` prints a completion script for `bash`, `zsh`,
+`fish` or `powershell`, and `aopctl completion <shell> --help` explains how to
+load it. For example:
+
+```sh
+# bash, with the bash-completion package installed
+aopctl completion bash > ~/.local/share/bash-completion/completions/aopctl
+# zsh, into a directory on your fpath
+aopctl completion zsh > "${fpath[1]}/_aopctl"
+# fish
+aopctl completion fish > ~/.config/fish/completions/aopctl.fish
+```
+
+Completion covers commands, flags, the `--key-type` values and, for
+`--hostname`, the entries of `AOP_HOSTNAMES` when it is set. It never calls
+the Cloudflare API, so it needs no token.
 
 ## Configure
 
@@ -134,7 +155,9 @@ op run --env-file aop.env -- aopctl hostname status
 
 `AOP_HOSTNAMES` must list every hostname this CA serves in the zone.
 Cloudflare has no API that lists all hostname associations, so `aopctl` only
-sees the hostnames you list. Repeated `--hostname` flags replace the variable.
+sees the hostnames you list. `--hostname` flags replace the variable. Repeat
+the flag or give it a comma-separated list, as in
+`--hostname app.example.com,admin.example.com`.
 A certificate can serve at most 100 hostnames.
 
 Create the API token with the **Zone > SSL and Certificates > Edit**
@@ -160,8 +183,10 @@ They fail Cloudflare's token verify endpoint, which `aopctl` does not use.
 | `aopctl zone prune --cert-id ID...`      | Delete the named zone-level certificates, keeping one active while enabled      |
 | `aopctl version`                         | Print the `aopctl` version                                                      |
 
-Run `aopctl <command> -h` for each command's flags. `aopctl` exits with 0 on
-success, 1 on errors and 2 on usage errors.
+Run `aopctl <command> --help` for each command's flags. Flags take two
+dashes, as in `--dry-run`. The only short forms are `-h` for `--help`, `-v`
+for `--version` and `-n` for `--dry-run`. `aopctl` exits with 0 on success, 1
+on errors and 2 on usage errors, such as an unknown command or flag.
 
 `aopctl ca create` makes an EC P-256 key (`--key-type rsa-3072` for RSA) and a
 CA certificate valid for 3650 days (`--days`). The CA can sign leaves only:
@@ -196,8 +221,8 @@ allows 10) and reads each hostname's association. It refuses a hostname whose
 association is disabled, since someone turned AOP off for it on purpose. It
 then uploads the leaf, waits for Cloudflare to report it `active`, points all
 listed hostnames at it in one request, and waits until each association is
-`active`. `--dry-run` prints the plan and changes nothing. The leaf key is
-only ever sent in the upload request. `hostname issue` never deletes a
+`active`. `--dry-run` (`-n`) prints the plan and changes nothing. The leaf
+key is only ever sent in the upload request. `hostname issue` never deletes a
 certificate.
 
 `aopctl hostname prune` deletes only the certificates named with
@@ -411,6 +436,31 @@ certificate, wait until it is `active`, then delete the previous one:
    still reach the backend.
 4. Run the printed `aopctl zone prune` command.
 
+## Use as a subcommand
+
+The `github.com/krystal/aopctl/cli` package is the `aopctl` command line. A
+tool built with [cobra](https://github.com/spf13/cobra) can mount it as a
+subcommand:
+
+```go
+root := &cobra.Command{Use: "othertool"}
+root.AddCommand(cli.NewCommand(cli.Options{}))
+err := root.ExecuteContext(ctx)
+os.Exit(cli.ExitCode(err))
+```
+
+`othertool aopctl hostname status` then works as `aopctl hostname status`
+does, with the same environment variables. The commands `aopctl` prints, such
+as the rollback and prune commands, start with `othertool aopctl`. Its errors
+print with an `aopctl:` prefix unless the root command sets `SilenceErrors`,
+and `cli.ExitCode` maps them to `aopctl`'s exit status: 0, 1, or 2 for usage
+errors. A command group run without a subcommand, such as
+`othertool aopctl hostname`, prints its help and then such an error.
+`cli.Options` can set the version and supply the environment variables
+from elsewhere than the process environment. Build a new command with
+`cli.NewCommand` for each run, because cobra keeps flag values such as
+`--yes` between runs.
+
 ## Use as a Go library
 
 The `aopctl` command is a thin wrapper around the
@@ -477,9 +527,9 @@ check needs the GitHub API and runs only in CI.
 
 ### Dependency updates
 
-Dependabot updates GitHub Actions weekly with a three-day cooldown, and
-`lint:pinact` rejects action pins younger than three days. To update tools,
-run `mise upgrade` (which respects the cooldown), then
+Dependabot updates GitHub Actions and Go modules weekly with a three-day
+cooldown, and `lint:pinact` rejects action pins younger than three days. To
+update tools, run `mise upgrade` (which respects the cooldown), then
 `mise lock --platform linux-x64,linux-arm64,macos-arm64`.
 
 For an urgent security fix inside the cooldown window, override it for that

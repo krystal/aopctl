@@ -1,6 +1,7 @@
-package main
+package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1193,6 +1194,44 @@ func TestHostnamePruneConfirmation(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("interrupt", func(t *testing.T) {
+		h := pruneHarness(t)
+		tty := newBlockingTTY()
+		h.openTTY = func() (io.ReadWriteCloser, error) { return tty, nil }
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-tty.prompted
+			cancel()
+		}()
+		type result struct {
+			code   int
+			stderr string
+		}
+		done := make(chan result, 1)
+		go func() {
+			code, _, stderr := h.runContext(ctx, "hostname", "prune", "--cert-id", "old")
+			done <- result{code, stderr}
+		}()
+		var r result
+		select {
+		case r = <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("still waiting for an answer 10s after the interrupt")
+		}
+		if r.code != 1 || !strings.HasSuffix(r.stderr, "aopctl: aborted: nothing deleted\n") {
+			t.Errorf("exit %d; stderr:\n%s", r.code, r.stderr)
+		}
+		if d := deletes(h); len(d) != 0 {
+			t.Errorf("deleted %v", d)
+		}
+		select {
+		case <-tty.closed:
+		default:
+			t.Error("left the terminal open")
+		}
+	})
 
 	t.Run("no terminal", func(t *testing.T) {
 		h := pruneHarness(t)

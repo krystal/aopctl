@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -79,8 +79,8 @@ func TestZoneUsageErrors(t *testing.T) {
 	})
 	t.Run("help", func(t *testing.T) {
 		h := zoneHarness(t)
-		if code, _, stderr := h.run("zone", "-h"); code != 0 || !strings.Contains(stderr, "zone enable") {
-			t.Errorf("exit %d; stderr:\n%s", code, stderr)
+		if code, stdout, stderr := h.run("zone", "-h"); code != 0 || !strings.Contains(stdout, "Turn on zone-level AOP") {
+			t.Errorf("exit %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 		}
 	})
 }
