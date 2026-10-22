@@ -35,7 +35,7 @@ func (c *Client) PlanHostnameAssociate(ctx context.Context, r HostnameAssociateR
 	if err := checkCA(r.CACert); err != nil {
 		return nil, err
 	}
-	if err := checkCertID(r.CertID); err != nil {
+	if err := checkHostnameCertID(r.CertID); err != nil {
 		return nil, err
 	}
 	hosts, err := requireHostnames(r.Hostnames)

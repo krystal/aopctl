@@ -44,7 +44,7 @@ func (a *app) hostnames(flags []string) ([]string, error) {
 
 // validateCertID keeps a --cert-id from changing the request path.
 func validateCertID(id string) error {
-	if !aopctl.ValidCertID(id) {
+	if !aopctl.ValidHostnameCertID(id) {
 		return usagef("invalid --cert-id %q: want a Cloudflare certificate ID", id)
 	}
 	return nil

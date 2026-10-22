@@ -95,7 +95,7 @@ func (c *Client) PlanHostnamePrune(ctx context.Context, r HostnamePruneRequest) 
 	var ids []string
 	seen := map[string]bool{}
 	for _, id := range r.CertIDs {
-		if err := checkCertID(id); err != nil {
+		if err := checkHostnameCertID(id); err != nil {
 			return nil, err
 		}
 		if !seen[id] {

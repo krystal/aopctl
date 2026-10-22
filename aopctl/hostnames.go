@@ -70,15 +70,16 @@ func requireHostnames(raw []string) ([]string, error) {
 
 var certIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
-// ValidCertID reports whether id can be a Cloudflare certificate ID, which
-// keeps it from changing a request's path. Cloudflare's certificate IDs are
-// UUIDs.
-func ValidCertID(id string) bool {
+// ValidHostnameCertID reports whether id is safe to use as a hostname
+// certificate ID in a request path: one to 64 letters, digits and hyphens,
+// so it cannot change the path. It does not check that id is a UUID, as
+// Cloudflare's IDs are.
+func ValidHostnameCertID(id string) bool {
 	return certIDPattern.MatchString(id)
 }
 
-func checkCertID(id string) error {
-	if !ValidCertID(id) {
+func checkHostnameCertID(id string) error {
+	if !ValidHostnameCertID(id) {
 		return fmt.Errorf("invalid certificate ID %q", id)
 	}
 	return nil
