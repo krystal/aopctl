@@ -67,6 +67,28 @@ jobs:
           minimum_release_age: 3d
       - run: mise run test
 
+  test-windows:
+    name: Unit tests (Windows)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      # mise.lock records only Go for Windows, so mise run must not install
+      # the other tools.
+      MISE_TASK_RUN_AUTO_INSTALL: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          github_token: ${{ github.token }}
+          # Apply the project's three-day cooldown to mise itself.
+          minimum_release_age: 3d
+          install_args: go
+      # -v lists the tests that ran, including the Windows-only ones.
+      - run: mise run test -- -v
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -88,7 +110,7 @@ jobs:
   release-please:
     name: Release Please
     runs-on: ubuntu-latest
-    needs: [lint, format, test, build]
+    needs: [lint, format, test, test-windows, build]
     # Keeps pull request and feature-branch runs out of the release
     # environment. This is only a filter: anyone who can push a branch can
     # edit it, so the environment's deployment branch policy is what

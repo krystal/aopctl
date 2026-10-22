@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/krystal/aopctl/aopctl"
 )
@@ -151,8 +152,9 @@ type app struct {
 	// input.
 	stdoutIsTerminal func(io.Writer) bool
 	stdinIsTerminal  func(io.Reader) bool
-	// openTTY opens the controlling terminal for confirmation prompts, which
-	// works under op run whatever stdin and stdout are.
+	// openTTY opens the terminal for confirmation prompts: the controlling
+	// terminal, or the console on Windows. Either works under op run
+	// whatever stdin and stdout are.
 	openTTY func() (io.ReadWriteCloser, error)
 
 	// baseURL, now and wait are the library's test seams. Empty and nil
@@ -176,11 +178,9 @@ func newApp(opts Options) *app {
 		getenv:           getenv,
 		stdoutIsTerminal: func(w io.Writer) bool { return isTerminal(w) },
 		stdinIsTerminal:  func(r io.Reader) bool { return isTerminal(r) },
-		openTTY: func() (io.ReadWriteCloser, error) {
-			return os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		},
-		now:     time.Now,
-		version: resolveVersion(opts.Version, debug.ReadBuildInfo),
+		openTTY:          openTerminal,
+		now:              time.Now,
+		version:          resolveVersion(opts.Version, debug.ReadBuildInfo),
 	}
 }
 
@@ -215,14 +215,14 @@ func resolveVersion(buildVersion string, readBuildInfo func() (*debug.BuildInfo,
 	return "(devel)"
 }
 
-// isTerminal reports whether v is a terminal. Only an *os.File can be one.
+// isTerminal reports whether v is a terminal. Only an *os.File can be one,
+// and a device that is not a terminal, such as os.DevNull, does not count.
 func isTerminal(v any) bool {
 	f, ok := v.(*os.File)
 	if !ok {
 		return false
 	}
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // commandPath is how printed commands start: "aopctl", or the full path

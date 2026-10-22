@@ -71,7 +71,7 @@ jobs:
       - run: mise run build:release
       # --clobber replaces assets an earlier, failed attempt uploaded.
       - name: Upload the archives to the draft release
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*_checksums.txt --clobber
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*_checksums.txt --clobber
         env:
           GH_TOKEN: ${{ github.token }}
       # Only releases from main become the latest release, so a maintenance

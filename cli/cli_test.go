@@ -464,6 +464,9 @@ func TestIsTerminal(t *testing.T) {
 	file, err := os.Create(filepath.Join(t.TempDir(), "file"))
 	require.NoError(t, err)
 	defer file.Close()
+	devNull, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	defer devNull.Close()
 	for _, tt := range []struct {
 		name string
 		v    any
@@ -471,6 +474,7 @@ func TestIsTerminal(t *testing.T) {
 		{"buffer", &bytes.Buffer{}},
 		{"reader", strings.NewReader("")},
 		{"regular file", file},
+		{"DevNull", devNull},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.False(t, isTerminal(tt.v), "isTerminal")
