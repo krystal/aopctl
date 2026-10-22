@@ -162,7 +162,7 @@ func TestCAShow(t *testing.T) {
 			t.Fatalf("manifest header mismatch:\n%s", stdout)
 		}
 		var pemLines []string
-		for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(body, "\n"), "\n") {
 			pemLines = append(pemLines, strings.TrimPrefix(line, "    "))
 		}
 		cert, err := parseCertPEM(strings.Join(pemLines, "\n"))

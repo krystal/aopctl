@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -55,8 +56,6 @@ func (ca *testCA) issue(t *testing.T) string {
 	}
 	return encodeCertPEM(leaf)
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // fakeCF is a stateful fake of Cloudflare's hostname AOP API.
 type fakeCF struct {
@@ -183,9 +182,7 @@ func (f *fakeCF) writes() []fakeRequest {
 
 func writeEnvelope(w http.ResponseWriter, status int, result any, extra map[string]any) {
 	env := map[string]any{"success": status < 300, "errors": []any{}, "messages": []any{}, "result": result}
-	for k, v := range extra {
-		env[k] = v
-	}
+	maps.Copy(env, extra)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(env)
@@ -618,8 +615,7 @@ func TestHostnames(t *testing.T) {
 			a := &app{getenv: func(string) string { return tt.env }}
 			got, err := a.hostnames(tt.flags)
 			if tt.err {
-				var usageErr *usageError
-				if !errors.As(err, &usageErr) {
+				if _, ok := errors.AsType[*usageError](err); !ok {
 					t.Fatalf("err = %v, want a usage error", err)
 				}
 				return

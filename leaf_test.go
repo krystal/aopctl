@@ -25,9 +25,9 @@ func issueHarness(t *testing.T) *harness {
 	h := newHarness(t)
 	h.fake.addCert("old-1", h.ca.issue(t))
 	h.fake.addCert("old-2", h.ca.issue(t))
-	h.fake.setAssoc(hostA, "old-1", boolPtr(true))
-	h.fake.setAssoc(hostB, "old-1", boolPtr(true))
-	h.fake.setAssoc(hostC, "old-2", boolPtr(true))
+	h.fake.setAssoc(hostA, "old-1", new(true))
+	h.fake.setAssoc(hostB, "old-1", new(true))
+	h.fake.setAssoc(hostC, "old-2", new(true))
 	h.env["AOP_HOSTNAMES"] = strings.Join([]string{hostA, hostB, hostC, hostD}, ",")
 	return h
 }
@@ -169,7 +169,7 @@ func TestLeafIssue(t *testing.T) {
 func TestLeafIssueFailures(t *testing.T) {
 	t.Run("no free slot", func(t *testing.T) {
 		h := issueHarness(t)
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			h.fake.addCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 		}
 		code, _, stderr := h.run("leaf", "issue")
@@ -427,7 +427,7 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("disabled hostname", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.setAssoc(hostC, "old-2", boolPtr(false))
+		h.fake.setAssoc(hostC, "old-2", new(false))
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "c.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
@@ -680,7 +680,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 // as argument lists without "aopctl".
 func commandLines(output, prefix string) [][]string {
 	var cmds [][]string
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, prefix) {
 			cmds = append(cmds, strings.Fields(line)[1:])
@@ -691,7 +691,7 @@ func commandLines(output, prefix string) [][]string {
 
 func TestLeafIssueLastSlotRecovery(t *testing.T) {
 	h := issueHarness(t)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		h.fake.addCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 	}
 	h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
@@ -733,8 +733,8 @@ func TestLeafIssueRollbackOutput(t *testing.T) {
 		if r.Method != http.MethodPut {
 			return false
 		}
-		h.fake.applyAssociation(hostA, "new-1", boolPtr(true))
-		h.fake.applyAssociation(hostC, "new-1", boolPtr(true))
+		h.fake.applyAssociation(hostA, "new-1", new(true))
+		h.fake.applyAssociation(hostC, "new-1", new(true))
 		writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 		return true
 	}
@@ -788,8 +788,8 @@ func TestLeafIssueOtherCA(t *testing.T) {
 		oldCA := newTestCA(t, 3650)
 		h.fake.addCert("old-1", oldCA.issue(t))
 		h.fake.addCert("cur-1", h.ca.issue(t))
-		h.fake.setAssoc(hostA, "old-1", boolPtr(true))
-		h.fake.setAssoc(hostB, "cur-1", boolPtr(true))
+		h.fake.setAssoc(hostA, "old-1", new(true))
+		h.fake.setAssoc(hostB, "cur-1", new(true))
 		h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 		return h, oldCA
 	}
@@ -801,7 +801,7 @@ func TestLeafIssueOtherCA(t *testing.T) {
 			if r.Method != http.MethodPut {
 				return false
 			}
-			h.fake.applyAssociation(hostA, "new-1", boolPtr(true))
+			h.fake.applyAssociation(hostA, "new-1", new(true))
 			writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		}
@@ -863,7 +863,7 @@ func TestLeafAssociate(t *testing.T) {
 		h.fake.addCert("foreign", newTestCA(t, 3650).issue(t))
 		h.fake.addCert("deploying", h.ca.issue(t), "pending_deployment")
 		h.env["AOP_HOSTNAMES"] = hostA + " " + hostB
-		h.fake.setAssoc(hostA, "old", boolPtr(true))
+		h.fake.setAssoc(hostA, "old", new(true))
 		return h
 	}
 
@@ -886,7 +886,7 @@ func TestLeafAssociate(t *testing.T) {
 
 	t.Run("refuses a disabled hostname", func(t *testing.T) {
 		h := setup(t)
-		h.fake.setAssoc(hostB, "old", boolPtr(false))
+		h.fake.setAssoc(hostB, "old", new(false))
 		code, _, stderr := h.run("leaf", "associate", "--cert-id", "good")
 		if code != 1 || !strings.Contains(stderr, "b.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
@@ -940,7 +940,7 @@ func TestLeafStatus(t *testing.T) {
 	minePEM := h.ca.issue(t)
 	h.fake.addCert("mine", minePEM)
 	h.fake.addCert("foreign", newTestCA(t, 3650).issue(t))
-	h.fake.setAssoc(hostA, "mine", boolPtr(true))
+	h.fake.setAssoc(hostA, "mine", new(true))
 	h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 	mineCert, err := parseCertPEM(minePEM)
 	if err != nil {
@@ -980,7 +980,7 @@ func pruneHarness(t *testing.T) *harness {
 	h.fake.addCert("used", h.ca.issue(t))
 	h.fake.addCert("old", h.ca.issue(t))
 	h.fake.addCert("spare", h.ca.issue(t))
-	h.fake.setAssoc(hostA, "used", boolPtr(true))
+	h.fake.setAssoc(hostA, "used", new(true))
 	h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 	return h
 }
@@ -1126,7 +1126,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 	t.Run("now associated", func(t *testing.T) {
 		h := pruneHarness(t)
 		changeOnReread(h, func(http.ResponseWriter) bool {
-			h.fake.assocs[hostB] = &fakeAssoc{certID: "old", enabled: boolPtr(true), statuses: []string{statusActive}}
+			h.fake.assocs[hostB] = &fakeAssoc{certID: "old", enabled: new(true), statuses: []string{statusActive}}
 			return false
 		})
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
@@ -1345,7 +1345,7 @@ func TestBudgetRunsOut(t *testing.T) {
 	const budget = "250ms"
 	// errorLine returns the command's error, without the recovery report.
 	errorLine := func(stderr string) string {
-		for _, line := range strings.Split(stderr, "\n") {
+		for line := range strings.SplitSeq(stderr, "\n") {
 			if strings.HasPrefix(line, "aopctl: ") {
 				return line
 			}

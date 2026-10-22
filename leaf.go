@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"regexp"
@@ -435,9 +436,7 @@ type rollout struct {
 func (a *app) rollOut(ctx context.Context, cf *cfClient, r *rollout) error {
 	if err := a.waitForCert(ctx, cf, r.certID); err != nil {
 		// No association was changed.
-		for h, assoc := range r.original {
-			r.observed[h] = assoc
-		}
+		maps.Copy(r.observed, r.original)
 		return err
 	}
 	fmt.Fprintf(a.stderr, "Pointing %d hostnames at %s.\n", len(r.hosts), r.certID)
