@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -166,12 +167,7 @@ func (e *apiError) Error() string {
 func (e *apiError) Unwrap() error { return e.err }
 
 func (e *apiError) hasCode(code int) bool {
-	for _, c := range e.codes {
-		if c == code {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(e.codes, code)
 }
 
 // isNotFound reports a Cloudflare 404. A 404 that is not an envelope, such
@@ -240,8 +236,7 @@ func (c *cfClient) do(ctx context.Context, method, path string, query url.Values
 
 	transportErr := func(status int, err error) (int, error) {
 		// url.Error includes the full URL, and with it the zone ID.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
+		if urlErr, ok := errors.AsType[*url.Error](err); ok {
 			err = urlErr.Err
 		}
 		return fail(&apiError{status: status, transport: true, detail: c.sanitize(err.Error()), err: err})

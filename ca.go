@@ -156,7 +156,7 @@ func writeSecretManifest(w io.Writer, name, namespace, certPEM string) {
 		fmt.Fprintf(w, "  namespace: %s\n", namespace)
 	}
 	fmt.Fprint(w, "type: Opaque\nstringData:\n  ca.crt: |\n")
-	for _, line := range strings.Split(strings.TrimSpace(certPEM), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(certPEM), "\n") {
 		fmt.Fprintf(w, "    %s\n", line)
 	}
 }
