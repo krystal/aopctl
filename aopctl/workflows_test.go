@@ -281,5 +281,7 @@ func TestNewClientDefaults(t *testing.T) {
 	if assert.Len(t, report.Certificates, 1, "report = %+v", report) {
 		assert.True(t, report.Certificates[0].SignedByCA, "report = %+v", report)
 	}
-	assert.Equal(t, "new-1", report.Associations[hostA].CertID, "report = %+v", report)
+	if assert.NotNil(t, report.Associations[hostA], "report = %+v", report) {
+		assert.Equal(t, "new-1", report.Associations[hostA].CertID, "report = %+v", report)
+	}
 }
