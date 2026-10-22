@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -83,6 +84,7 @@ func TestConsoleCloseEndsPendingRead(t *testing.T) {
 	}
 	// Close returns only after the Read did.
 	r := <-read
-	// An error, not stray console input, ended the read.
-	assert.Error(t, r.err, "pending read returned %d bytes", r.n)
+	// Cancelling, not stray console input, Ctrl+C or the closed check,
+	// ended the read.
+	assert.ErrorIs(t, r.err, syscall.ERROR_OPERATION_ABORTED, "pending read returned %d bytes", r.n)
 }
