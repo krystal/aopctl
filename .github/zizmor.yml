@@ -1,0 +1,12 @@
+rules:
+  dependabot-cooldown:
+    config:
+      # Project policy is a three-day cooldown for every dependency source.
+      days: 3
+  cache-poisoning:
+    ignore:
+      # ci.yml publishes nothing it builds. release.yml builds the release
+      # archives, and this rule does not cover its workflow_dispatch trigger,
+      # so it keeps the mise cache off itself. Revisit if ci.yml ever builds
+      # or uploads release artifacts.
+      - ci.yml
