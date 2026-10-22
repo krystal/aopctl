@@ -10,9 +10,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,8 +98,14 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) run(args ...string) (code int, stdout, stderr string) {
 	h.t.Helper()
+	return h.runContext(context.Background(), args...)
+}
+
+// runContext runs the CLI with ctx as the command's context.
+func (h *harness) runContext(ctx context.Context, args ...string) (code int, stdout, stderr string) {
+	h.t.Helper()
 	cmd := newRootCmd(h.app())
-	return h.capture(cmd, func() int { return execute(context.Background(), cmd, args) })
+	return h.capture(cmd, func() int { return execute(ctx, cmd, args) })
 }
 
 // runMounted runs the CLI as the aopctl subcommand of another program,
@@ -156,6 +165,34 @@ type fakeTTY struct {
 func (t *fakeTTY) Write(p []byte) (int, error) { return t.prompt.Write(p) }
 func (t *fakeTTY) Close() error                { return nil }
 
+// blockingTTY is a terminal whose reads wait until it is closed. prompted
+// is closed once the prompt is written.
+type blockingTTY struct {
+	prompted   chan struct{}
+	closed     chan struct{}
+	promptOnce sync.Once
+	closeOnce  sync.Once
+}
+
+func newBlockingTTY() *blockingTTY {
+	return &blockingTTY{prompted: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (t *blockingTTY) Read([]byte) (int, error) {
+	<-t.closed
+	return 0, os.ErrClosed
+}
+
+func (t *blockingTTY) Write(p []byte) (int, error) {
+	t.promptOnce.Do(func() { close(t.prompted) })
+	return len(p), nil
+}
+
+func (t *blockingTTY) Close() error {
+	t.closeOnce.Do(func() { close(t.closed) })
+	return nil
+}
+
 func TestUsage(t *testing.T) {
 	// Help that was asked for goes to stdout. A missing or unknown command
 	// prints the help or an error to stderr.
@@ -171,7 +208,11 @@ func TestUsage(t *testing.T) {
 		{[]string{"help"}, 0, "Usage:\n  aopctl [flags]\n  aopctl [command]", ""},
 		{[]string{"hostname", "-h"}, 0, "Usage:\n  aopctl hostname [flags]\n  aopctl hostname [command]", ""},
 		{[]string{"hostname", "issue", "-h"}, 0, "Usage:\n  aopctl hostname issue [flags]", ""},
+		{[]string{"help", "hostname"}, 0, "Usage:\n  aopctl hostname [flags]\n  aopctl hostname [command]", ""},
 		{[]string{"help", "hostname", "issue"}, 0, "Usage:\n  aopctl hostname issue [flags]", ""},
+		{[]string{"completion"}, 2, "", "Usage:\n  aopctl completion [flags]\n  aopctl completion [command]"},
+		{[]string{"completion", "zsh"}, 0, "#compdef aopctl\n", ""},
+		{[]string{"completion", "zsh", "--help"}, 0, "Usage:\n  aopctl completion zsh", ""},
 		{[]string{"ca"}, 2, "", "Usage:\n  aopctl ca [flags]\n  aopctl ca [command]"},
 		{[]string{"hostname"}, 2, "", "Usage:\n  aopctl hostname [flags]\n  aopctl hostname [command]"},
 		{[]string{"hostname", "rotate"}, 2, "", "Run 'aopctl hostname --help' for usage."},
@@ -210,9 +251,14 @@ func TestCommandLineErrors(t *testing.T) {
 		{"unknown flag", []string{"hostname", "status", "--bogus"}, "aopctl: unknown flag: --bogus\nRun 'aopctl hostname status --help' for usage.\n"},
 		{"single-dash long flag", []string{"zone", "status", "-help"}, "aopctl: unknown shorthand flag: 'e' in -elp\nRun 'aopctl zone status --help' for usage.\n"},
 		{"missing flag value", []string{"zone", "prune", "--cert-id"}, "aopctl: flag needs an argument: --cert-id\nRun 'aopctl zone prune --help' for usage.\n"},
-		{"positional argument", []string{"zone", "status", "extra"}, "aopctl: unknown command \"extra\" for \"aopctl zone status\"\nRun 'aopctl zone status --help' for usage.\n"},
+		{"positional argument", []string{"zone", "status", "extra"}, "aopctl: unexpected argument \"extra\"\nRun 'aopctl zone status --help' for usage.\n"},
 		{"unknown command", []string{"rotate"}, "aopctl: unknown command \"rotate\" for \"aopctl\"\nRun 'aopctl --help' for usage.\n"},
 		{"unknown subcommand", []string{"hostname", "rotate"}, "aopctl: unknown command \"rotate\" for \"aopctl hostname\"\nRun 'aopctl hostname --help' for usage.\n"},
+		{"help for an unknown command", []string{"help", "bogus"}, "aopctl: unknown command \"bogus\" for \"aopctl\"\nRun 'aopctl --help' for usage.\n"},
+		{"help for an unknown subcommand", []string{"help", "hostname", "bogus"}, "aopctl: unknown command \"bogus\" for \"aopctl hostname\"\nRun 'aopctl hostname --help' for usage.\n"},
+		{"help with an argument", []string{"help", "hostname", "status", "extra"}, "aopctl: unexpected argument \"extra\"\nRun 'aopctl hostname status --help' for usage.\n"},
+		{"unknown shell", []string{"completion", "bogus"}, "aopctl: unknown command \"bogus\" for \"aopctl completion\"\nRun 'aopctl completion --help' for usage.\n"},
+		{"completion argument", []string{"completion", "zsh", "extra"}, "aopctl: unexpected argument \"extra\"\nRun 'aopctl completion zsh --help' for usage.\n"},
 		{"validation", []string{"ca", "create", "--days", "0"}, "aopctl: --days must be positive, got 0\n"},
 	}
 	for _, tt := range tests {
@@ -230,6 +276,25 @@ func TestCommandLineErrors(t *testing.T) {
 			}
 			if n := len(h.fake.Recorded()); n != 0 {
 				t.Errorf("sent %d requests, want none", n)
+			}
+		})
+	}
+}
+
+// TestMissingCommandHelp checks that a group run without a subcommand
+// prints to stderr exactly the help that --help prints to stdout.
+func TestMissingCommandHelp(t *testing.T) {
+	for _, group := range []string{"", "ca", "hostname", "zone", "completion"} {
+		t.Run(strings.TrimSpace("aopctl "+group), func(t *testing.T) {
+			args := strings.Fields(group)
+			h := newHarness(t)
+			code, stdout, stderr := h.run(args...)
+			if code != 2 || stdout != "" {
+				t.Errorf("exit %d, stdout %q; want 2 and empty", code, stdout)
+			}
+			_, help, _ := h.run(append(args, "--help")...)
+			if stderr != help {
+				t.Errorf("stderr = %q, want the --help output %q", stderr, help)
 			}
 		})
 	}
@@ -285,6 +350,43 @@ func TestHostnameFlagLists(t *testing.T) {
 	if !strings.Contains(stderr, want) {
 		t.Errorf("stderr lacks %q:\n%s", want, stderr)
 	}
+}
+
+func TestEmptyHostnameFlag(t *testing.T) {
+	// An empty --hostname replaces AOP_HOSTNAMES rather than falling back to
+	// it.
+	for _, args := range [][]string{
+		{"hostname", "issue", "--hostname", ""},
+		{"hostname", "associate", "--cert-id", "new-1", "--hostname="},
+		{"hostname", "prune", "--cert-id", "old", "--yes", "--hostname", ""},
+	} {
+		t.Run(args[1], func(t *testing.T) {
+			h := newHarness(t)
+			h.env["AOP_HOSTNAMES"] = hostA
+			code, _, stderr := h.run(args...)
+			if code != 1 {
+				t.Errorf("exit %d, want 1", code)
+			}
+			if want := "aopctl: no hostnames: set AOP_HOSTNAMES or pass --hostname\n"; stderr != want {
+				t.Errorf("stderr = %q, want %q", stderr, want)
+			}
+			if n := len(h.fake.Recorded()); n != 0 {
+				t.Errorf("sent %d requests, want none", n)
+			}
+		})
+	}
+
+	t.Run("status", func(t *testing.T) {
+		h := newHarness(t)
+		h.env["AOP_HOSTNAMES"] = hostA
+		code, stdout, stderr := h.run("hostname", "status", "--hostname", "")
+		if code != 0 {
+			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
+		}
+		if n := h.fake.Count(http.MethodGet, "/hostnames/"+hostA); n != 0 || strings.Contains(stdout, "Hostnames:") {
+			t.Errorf("reported AOP_HOSTNAMES (%d reads):\n%s", n, stdout)
+		}
+	})
 }
 
 // TestCompletion drives cobra's hidden completion command, which prints the
@@ -364,13 +466,82 @@ func TestMounted(t *testing.T) {
 		if code != 2 {
 			t.Errorf("exit %d, want 2", code)
 		}
-		if !strings.HasPrefix(stderr, "Manage per-hostname AOP certificates\n\nUsage:\n  othertool aopctl hostname [flags]") || strings.Contains(stderr, "aopctl:") {
-			t.Errorf("stderr is not only the help:\n%s", stderr)
+		// The host prints the error after the help.
+		if !strings.HasPrefix(stderr, "Manage per-hostname AOP certificates\n\nUsage:\n  othertool aopctl hostname [flags]") ||
+			!strings.HasSuffix(stderr, " for more information about a command.\naopctl: othertool aopctl hostname requires a subcommand\n") {
+			t.Errorf("stderr is not the help and the error:\n%s", stderr)
 		}
 		if stdout != "" {
 			t.Errorf("stdout = %q, want empty", stdout)
 		}
 	})
+}
+
+// TestMountedReuse runs one mounted command tree more than once, as a host
+// may.
+func TestMountedReuse(t *testing.T) {
+	h := newHarness(t)
+	host := &cobra.Command{Use: "othertool"}
+	host.AddCommand(newRootCmd(h.app()))
+	run := func(args ...string) (code int, stdout, stderr string) {
+		host.SetArgs(append([]string{"aopctl"}, args...))
+		return h.capture(host, func() int { return ExitCode(host.Execute()) })
+	}
+
+	if code, _, _ := run("hostname"); code != 2 {
+		t.Fatalf("hostname: exit %d, want 2", code)
+	}
+	// capture gives each run new writers.
+	code, stdout, stderr := run("hostname", "rotate")
+	if want := "aopctl: unknown command \"rotate\" for \"othertool aopctl hostname\"\nRun 'othertool aopctl hostname --help' for usage.\n"; code != 2 || stderr != want {
+		t.Errorf("hostname rotate: exit %d, stderr %q; want 2 and %q", code, stderr, want)
+	}
+	if stdout != "" {
+		t.Errorf("hostname rotate: stdout = %q, want empty", stdout)
+	}
+	code, stdout, _ = run("hostname", "--help")
+	if code != 0 || !strings.Contains(stdout, "Usage:\n  othertool aopctl hostname [flags]") {
+		t.Errorf("hostname --help: exit %d, stdout %q; want 0 and the help", code, stdout)
+	}
+}
+
+// TestContext checks that commands stop when their context is cancelled.
+func TestContext(t *testing.T) {
+	h := issueHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code, stdout, stderr := h.runContext(ctx, "hostname", "issue")
+	if code != 1 || !strings.Contains(stderr, "context canceled") {
+		t.Errorf("exit %d, want 1 after the cancellation; stderr:\n%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if w := h.fake.Writes(); len(w) != 0 {
+		t.Errorf("sent %d write requests, want none", len(w))
+	}
+}
+
+func TestIsTerminal(t *testing.T) {
+	file, err := os.Create(filepath.Join(t.TempDir(), "file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for _, tt := range []struct {
+		name string
+		v    any
+	}{
+		{"buffer", &bytes.Buffer{}},
+		{"reader", strings.NewReader("")},
+		{"regular file", file},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if isTerminal(tt.v) {
+				t.Error("isTerminal = true, want false")
+			}
+		})
+	}
 }
 
 func TestDefaultKeyTypes(t *testing.T) {
@@ -493,6 +664,7 @@ func TestHostnames(t *testing.T) {
 			want:  []string{"x.example.com", "y.example.com"},
 		},
 		{name: "empty", env: " , ", want: nil},
+		{name: "empty flags replace env", env: "a.example.com", flags: []string{}, want: nil},
 		{name: "wildcard", flags: []string{"*.example.com"}, err: true},
 		{name: "port", flags: []string{"a.example.com:443"}, err: true},
 		{name: "path", flags: []string{"a.example.com/x"}, err: true},

@@ -21,6 +21,11 @@ var version string
 func main() {
 	// Interrupts cancel the command's context, so it stops cleanly.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		// A second interrupt kills aopctl if the command does not stop.
+		<-ctx.Done()
+		stop()
+	}()
 	code := cli.Run(ctx, os.Args[1:], cli.Options{Version: version})
 	stop()
 	os.Exit(code)

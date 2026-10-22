@@ -54,10 +54,12 @@ func (a *app) envHostnames() []string {
 }
 
 // hostnames returns the --hostname flags, or AOP_HOSTNAMES when no flag is
-// given, normalized and deduplicated.
+// given, normalized and deduplicated. flags is nil only when no flag is
+// given: --hostname "" sets it to an empty list, which must not fall back
+// to AOP_HOSTNAMES.
 func (a *app) hostnames(flags []string) ([]string, error) {
 	entries := flags
-	if len(entries) == 0 {
+	if entries == nil {
 		entries = a.envHostnames()
 	}
 	hosts, err := aopctl.NormalizeHostnames(entries)
@@ -621,7 +623,7 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 		fmt.Fprintln(stderr, pruneWarning)
 	}
 	if n := plan.Deletes(); n > 0 && !o.yes {
-		ok, err := a.confirm(fmt.Sprintf("Delete %d certificate(s)? [y/N] ", n))
+		ok, err := a.confirm(cmd.Context(), fmt.Sprintf("Delete %d certificate(s)? [y/N] ", n))
 		if err != nil {
 			return err
 		}
@@ -642,22 +644,42 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 	return nil
 }
 
-// confirm asks on the controlling terminal. Only "y" or "yes" confirms.
-func (a *app) confirm(prompt string) (bool, error) {
+// confirm asks on the controlling terminal. Only "y" or "yes" confirms, and
+// cancelling ctx, as an interrupt does, answers no.
+func (a *app) confirm(ctx context.Context, prompt string) (bool, error) {
 	tty, err := a.openTTY()
 	if err != nil {
 		return false, fmt.Errorf("cannot open the terminal to confirm, pass --yes to skip confirmation: %w", err)
 	}
 	defer tty.Close()
 	fmt.Fprint(tty, prompt)
-	line, err := bufio.NewReader(tty).ReadString('\n')
+	type reply struct {
+		line string
+		err  error
+	}
+	// Only this goroutine reads the terminal. Closing it ends a pending
+	// read, and the buffered channel lets the goroutine finish after
+	// confirm returns.
+	replies := make(chan reply, 1)
+	go func() {
+		line, err := bufio.NewReader(tty).ReadString('\n')
+		replies <- reply{line, err}
+	}()
+	var r reply
+	select {
+	case <-ctx.Done():
+		// End the line the interrupt left the prompt on.
+		fmt.Fprintln(tty)
+		return false, nil
+	case r = <-replies:
+	}
 	// EOF before a newline aborts, whatever was typed.
-	if errors.Is(err, io.EOF) {
+	if errors.Is(r.err, io.EOF) {
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("read confirmation: %w", err)
+	if r.err != nil {
+		return false, fmt.Errorf("read confirmation: %w", r.err)
 	}
-	answer := strings.ToLower(strings.TrimSpace(line))
+	answer := strings.ToLower(strings.TrimSpace(r.line))
 	return answer == "y" || answer == "yes", nil
 }

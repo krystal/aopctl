@@ -453,7 +453,9 @@ does, with the same environment variables. The commands `aopctl` prints, such
 as the rollback and prune commands, start with `othertool aopctl`. Its errors
 print with an `aopctl:` prefix unless the root command sets `SilenceErrors`,
 and `cli.ExitCode` maps them to `aopctl`'s exit status: 0, 1, or 2 for usage
-errors. `cli.Options` can set the version and supply the environment variables
+errors. A command group run without a subcommand, such as
+`othertool aopctl hostname`, prints its help and then such an error.
+`cli.Options` can set the version and supply the environment variables
 from elsewhere than the process environment.
 
 ## Use as a Go library

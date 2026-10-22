@@ -11,6 +11,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -92,11 +94,49 @@ func execute(ctx context.Context, cmd *cobra.Command, args []string) int {
 	}
 	cmd.SetArgs(args)
 	cmd.SilenceErrors = true
+	initStandalone(cmd, args)
 	err := cmd.ExecuteContext(ctx)
-	if err != nil && err.Error() != "" {
+	if e, ok := errors.AsType[*usageError](err); ok && e.helpShown {
+		// The help says it all.
+		return ExitCode(err)
+	}
+	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "aopctl: %v\n", err)
 	}
 	return ExitCode(err)
+}
+
+// initStandalone adds cobra's help and completion commands to the aopctl
+// root cmd, which cobra would add when it executes, and makes them exit
+// with status 2 on bad arguments as the aopctl commands do. When aopctl is
+// mounted, these commands belong to the host's root instead.
+func initStandalone(cmd *cobra.Command, args []string) {
+	cmd.InitDefaultHelpCmd()
+	cmd.InitDefaultCompletionCmd(args...)
+	for _, sub := range cmd.Commands() {
+		switch sub.Name() {
+		case "help":
+			// cobra's help prints the closest help it finds for an unknown
+			// command.
+			sub.Args = helpArgs
+		case "completion":
+			sub.Args = noArgs
+			sub.RunE = helpUsage
+			for _, shell := range sub.Commands() {
+				shell.Args = noArgs
+			}
+		}
+	}
+}
+
+// helpArgs rejects a help topic that is not a command, as that command
+// would reject the arguments left over.
+func helpArgs(cmd *cobra.Command, args []string) error {
+	topic, rest, err := cmd.Root().Find(args)
+	if err != nil {
+		return commandLineError(cmd, err)
+	}
+	return noArgs(topic, rest)
 }
 
 type app struct {
@@ -243,21 +283,23 @@ func silenceUsage(cmd *cobra.Command) {
 // helpUsage prints the help to stderr for a command run without a
 // subcommand, and exits with status 2.
 func helpUsage(cmd *cobra.Command, _ []string) error {
-	out := cmd.OutOrStdout()
-	cmd.SetOut(cmd.ErrOrStderr())
-	err := cmd.Help()
-	cmd.SetOut(out)
-	if err != nil {
-		return err
+	// This is what cmd.Help prints with cobra's default help template, but
+	// to stderr, without changing the command's writers.
+	w := cmd.ErrOrStderr()
+	if desc := strings.TrimRightFunc(cmp.Or(cmd.Long, cmd.Short), unicode.IsSpace); desc != "" {
+		fmt.Fprintf(w, "%s\n\n", desc)
 	}
-	// The help says it all, so nothing prints the empty error.
-	cmd.SilenceErrors = true
-	return &usageError{}
+	fmt.Fprint(w, cmd.UsageString())
+	return &usageError{msg: cmd.CommandPath() + " requires a subcommand", helpShown: true}
 }
 
-// usageError exits with status 2. An empty message means the usage was
-// already printed.
-type usageError struct{ msg string }
+// usageError exits with status 2. helpShown means the help was printed
+// instead, so execute prints nothing more. A command that mounts aopctl
+// prints the message after the help unless it silences errors.
+type usageError struct {
+	msg       string
+	helpShown bool
+}
 
 func (e *usageError) Error() string { return e.msg }
 
@@ -274,10 +316,13 @@ func commandLineError(cmd *cobra.Command, err error) error {
 // noArgs rejects positional arguments, which are unknown commands for a
 // group command, as a usage error.
 func noArgs(cmd *cobra.Command, args []string) error {
-	if err := cobra.NoArgs(cmd, args); err != nil {
-		return commandLineError(cmd, err)
+	if len(args) == 0 {
+		return nil
 	}
-	return nil
+	if cmd.HasSubCommands() {
+		return commandLineError(cmd, cobra.NoArgs(cmd, args))
+	}
+	return commandLineError(cmd, fmt.Errorf("unexpected argument %q", args[0]))
 }
 
 var keyTypes = []cobra.Completion{string(aopctl.KeyTypeECP256), string(aopctl.KeyTypeRSA3072)}

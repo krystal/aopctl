@@ -183,7 +183,7 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 		return nil
 	}
 	if replaces && !o.yes {
-		ok, err := a.confirm("Upload the new certificate and let it replace the one in use? [y/N] ")
+		ok, err := a.confirm(cmd.Context(), "Upload the new certificate and let it replace the one in use? [y/N] ")
 		if err != nil {
 			return err
 		}
@@ -305,7 +305,7 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 		return nil
 	}
 	if !o.yes {
-		ok, err := a.confirm("Enable zone-level AOP? [y/N] ")
+		ok, err := a.confirm(cmd.Context(), "Enable zone-level AOP? [y/N] ")
 		if err != nil {
 			return err
 		}
@@ -497,7 +497,7 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 		return nil
 	}
 	if n := plan.Deletes(); n > 0 && !o.yes {
-		ok, err := a.confirm(fmt.Sprintf("Delete %d zone certificate(s)? [y/N] ", n))
+		ok, err := a.confirm(cmd.Context(), fmt.Sprintf("Delete %d zone certificate(s)? [y/N] ", n))
 		if err != nil {
 			return err
 		}
