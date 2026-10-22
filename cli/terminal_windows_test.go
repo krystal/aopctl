@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,4 +50,39 @@ func TestOpenConsoleMissingOutput(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist, "openConsole")
 	// Windows cannot remove a file that is still open.
 	assert.NoError(t, os.Remove(inName), "remove the input, which openConsole should have closed")
+}
+
+func TestConsoleCloseEndsPendingRead(t *testing.T) {
+	tty, err := openTerminal()
+	if err != nil {
+		t.Skipf("no console: %v", err)
+	}
+	c, ok := tty.(*console)
+	require.True(t, ok, "openTerminal returned %T", tty)
+
+	type result struct {
+		n   int
+		err error
+	}
+	read := make(chan result, 1)
+	go func() {
+		n, err := c.Read(make([]byte, 64))
+		read <- result{n, err}
+	}()
+	require.Eventually(t, func() bool { return c.reads.Load() > 0 || len(read) > 0 },
+		10*time.Second, time.Millisecond, "Read never started")
+	require.Empty(t, read, "Read ended before Close")
+
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+	select {
+	case err := <-closed:
+		assert.NoError(t, err, "close")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "Close blocked on the pending console read", "reads in progress: %d", c.reads.Load())
+	}
+	// Close returns only after the Read did.
+	r := <-read
+	// An error, not stray console input, ended the read.
+	assert.Error(t, r.err, "pending read returned %d bytes", r.n)
 }
