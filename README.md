@@ -50,8 +50,7 @@ command line uses [cobra](https://github.com/spf13/cobra).
 
 ## Install
 
-Prebuilt binaries cover Linux and macOS on amd64 and arm64. There are no
-Windows builds: `aopctl` asks for confirmation through `/dev/tty`.
+Prebuilt binaries cover Linux, macOS and Windows on amd64 and arm64.
 
 ### With mise
 
@@ -74,6 +73,9 @@ release only once it is that old, unless you add `github:krystal/aopctl` to
 go install github.com/krystal/aopctl@latest
 ```
 
+It puts the binary, `aopctl.exe` on Windows, in the `bin` directory of
+`go env GOPATH`, or in `GOBIN` when that is set.
+
 mise's `go` backend does the same through mise:
 
 ```sh
@@ -82,9 +84,11 @@ mise use -g go:github.com/krystal/aopctl
 
 ### From a release archive
 
-Each [release](https://github.com/krystal/aopctl/releases) has a `.tar.gz`
-archive per platform, holding the `aopctl` binary, `LICENSE`, `README.md` and
-`CHANGELOG.md`, and a checksums file. To install a release on Linux amd64:
+Each [release](https://github.com/krystal/aopctl/releases) has an archive
+per platform, holding the `aopctl` binary, `LICENSE`, `README.md` and
+`CHANGELOG.md`, and a checksums file. Linux and macOS archives are `.tar.gz`;
+Windows archives are `.zip` and hold `aopctl.exe`. To install a release on
+Linux amd64:
 
 ```sh
 version=0.1.0 # the release to install, without the leading v
@@ -99,6 +103,25 @@ For other platforms, replace `linux_amd64` with `linux_arm64`, `darwin_amd64`
 or `darwin_arm64`. On macOS, check the checksum with `shasum -a 256 --check`
 instead of `sha256sum --check`. Then move `aopctl` to a directory on your
 `PATH`.
+
+On Windows amd64, in PowerShell:
+
+```powershell
+$version = "0.1.0" # the release to install, without the leading v
+$base = "https://github.com/krystal/aopctl/releases/download/v$version"
+$archive = "aopctl_${version}_windows_amd64.zip"
+$checksums = "aopctl_${version}_checksums.txt"
+Invoke-WebRequest "$base/$archive" -OutFile $archive
+Invoke-WebRequest "$base/$checksums" -OutFile $checksums
+$hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+if (-not (Select-String -Path $checksums -SimpleMatch -Pattern "$hash  $archive" -Quiet)) {
+  throw "checksum mismatch: $archive"
+}
+Expand-Archive $archive -DestinationPath aopctl
+```
+
+For Windows arm64, replace `windows_amd64` with `windows_arm64`. Then move
+`aopctl\aopctl.exe` to a directory on your `PATH`.
 
 Releases are GitHub
 [immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
@@ -135,9 +158,25 @@ aopctl completion zsh > "${fpath[1]}/_aopctl"
 aopctl completion fish > ~/.config/fish/completions/aopctl.fish
 ```
 
+For PowerShell, add this line to your `$PROFILE` to load the completion in
+every session:
+
+```powershell
+aopctl completion powershell | Out-String | Invoke-Expression
+```
+
 Completion covers commands, flags, the `--key-type` values and, for
 `--hostname`, the entries of `AOP_HOSTNAMES` when it is set. It never calls
 the Cloudflare API, so it needs no token.
+
+### On Windows
+
+Confirmation prompts use the Windows console, so they work under `op run`
+as they do through `/dev/tty` elsewhere. Run `aopctl` in Windows Terminal,
+PowerShell or Command Prompt. In Git Bash's mintty window, stdin and stdout
+are pipes rather than the console, so `aopctl` doesn't detect a terminal:
+`aopctl ca create` writes the CA key to the screen instead of refusing, and
+`aopctl ca show` waits for input instead of failing.
 
 ## Configure
 
@@ -243,8 +282,9 @@ certificate.
 `--cert-id`. It refuses a certificate that is not signed by `AOP_CA_CERT` or
 that a listed hostname uses, and checks the listed hostnames again just before
 each delete. It shows a preview and asks for confirmation on the terminal,
-through `/dev/tty` so the prompt works under `op run`, unless you pass
-`--yes`. A certificate already being deleted is waited for, not deleted again.
+through `/dev/tty` or the Windows console so the prompt works under `op run`,
+unless you pass `--yes`. A certificate already being deleted is waited for,
+not deleted again.
 
 `hostname issue`, `hostname associate` and `hostname prune` poll every 5
 seconds within a total budget for the whole command, `--timeout`, which

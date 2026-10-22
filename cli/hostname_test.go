@@ -950,6 +950,8 @@ func TestHostnamePruneConfirmation(t *testing.T) {
 	}{
 		{"y\n", true},
 		{"YES\n", true},
+		// Console input ends lines with "\r\n".
+		{"y\r\n", true},
 		{"n\n", false},
 		{"\n", false},
 		{"", false},

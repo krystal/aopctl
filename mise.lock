@@ -38,6 +38,10 @@ url = "https://dl.google.com/go/go1.27.2.linux-amd64.tar.gz"
 checksum = "sha256:76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5"
 url = "https://dl.google.com/go/go1.27.2.darwin-arm64.tar.gz"
 
+[tools.go."platforms.windows-x64"]
+checksum = "sha256:1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f"
+url = "https://dl.google.com/go/go1.27.2.windows-amd64.zip"
+
 [[tools.golangci-lint]]
 version = "2.15.0"
 backend = "aqua:golangci/golangci-lint"

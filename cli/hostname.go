@@ -644,7 +644,7 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 	return nil
 }
 
-// confirm asks on the controlling terminal. Only "y" or "yes" confirms, and
+// confirm asks on the terminal openTTY opens. Only "y" or "yes" confirms, and
 // cancelling ctx, as an interrupt does, answers no.
 func (a *app) confirm(ctx context.Context, prompt string) (bool, error) {
 	tty, err := a.openTTY()
