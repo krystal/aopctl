@@ -1,4 +1,18 @@
+<div align="center">
+
 # aopctl
+
+**Manage a dedicated client CA and its per-hostname and zone-level certificates
+for Cloudflare Authenticated Origin Pulls.**
+
+[![GitHub Release](https://img.shields.io/github/v/release/krystal/aopctl?logo=github&label=Release)](https://github.com/krystal/aopctl/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/krystal/aopctl/ci.yml?branch=main&logo=github&label=CI)](https://github.com/krystal/aopctl/actions/workflows/ci.yml?query=branch%3Amain)
+[![Go Reference](https://img.shields.io/badge/pkg.go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/krystal/aopctl/aopctl)
+[![GitHub Issues](https://img.shields.io/github/issues/krystal/aopctl?logo=github&label=Issues)](https://github.com/krystal/aopctl/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/krystal/aopctl?logo=github&label=PRs)](https://github.com/krystal/aopctl/pulls)
+[![License](https://img.shields.io/github/license/krystal/aopctl?label=License)](https://github.com/krystal/aopctl/blob/main/LICENSE)
+
+</div>
 
 `aopctl` is a command-line tool for Cloudflare's per-hostname
 [Authenticated Origin Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/per-hostname/)
