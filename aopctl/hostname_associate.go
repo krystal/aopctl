@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	"slices"
+	"sync/atomic"
 )
 
 // HostnameAssociateRequest names an existing certificate and the hostnames
@@ -16,16 +18,27 @@ type HostnameAssociateRequest struct {
 	Hostnames []string
 }
 
-// HostnameAssociatePlan is an association change, checked against the zone.
+// HostnameAssociatePlan is an association change, checked against the
+// zone. Its accessors return copies, and Apply acts only on what the plan
+// captured.
 type HostnameAssociatePlan struct {
-	CertID    string
-	Hostnames []string
-	// Current holds each hostname's association when planned. A nil value
-	// means none.
-	Current map[string]*Association
-
 	client  *Client
-	applied bool
+	certID  string
+	hosts   []string
+	current map[string]*Association
+	applied atomic.Bool
+}
+
+// CertID returns the certificate the hostnames will point at.
+func (p *HostnameAssociatePlan) CertID() string { return p.certID }
+
+// Hostnames returns the normalized hostnames.
+func (p *HostnameAssociatePlan) Hostnames() []string { return slices.Clone(p.hosts) }
+
+// Current returns each hostname's association when planned. A nil value
+// means none.
+func (p *HostnameAssociatePlan) Current() map[string]*Association {
+	return cloneAssociations(p.current)
 }
 
 // PlanHostnameAssociate reads the certificate and the hostnames'
@@ -60,18 +73,18 @@ func (c *Client) PlanHostnameAssociate(ctx context.Context, r HostnameAssociateR
 	if err := refuseDisabled(hosts, current); err != nil {
 		return nil, err
 	}
-	return &HostnameAssociatePlan{CertID: r.CertID, Hostnames: hosts, Current: current, client: c}, nil
+	return &HostnameAssociatePlan{client: c, certID: r.CertID, hosts: hosts, current: current}, nil
 }
 
 // Apply points every hostname at the certificate and waits for each
-// association to become active.
+// association to become active. Without a deadline on ctx, it polls with no
+// time limit.
 func (p *HostnameAssociatePlan) Apply(ctx context.Context) error {
-	if p.applied {
+	if !p.applied.CompareAndSwap(false, true) {
 		return ErrPlanApplied
 	}
-	p.applied = true
-	if err := p.client.cf.associate(ctx, p.CertID, p.Hostnames); err != nil {
+	if err := p.client.cf.associate(ctx, p.certID, p.hosts); err != nil {
 		return fmt.Errorf("associate hostnames: %w", err)
 	}
-	return p.client.waitForAssociations(ctx, p.CertID, p.Hostnames, map[string]*Association{})
+	return p.client.waitForAssociations(ctx, p.certID, p.hosts, map[string]*Association{})
 }

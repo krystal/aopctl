@@ -5,7 +5,9 @@ import (
 	"crypto"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,27 +67,132 @@ func issueRequest(ca *testCA) aopctl.HostnameIssueRequest {
 	}
 }
 
-// TestHostnameIssueAppliesOnce guards against a retried Apply uploading a
-// second certificate.
-func TestHostnameIssueAppliesOnce(t *testing.T) {
-	c, fake, ca := setup(t, 0)
-	ctx := context.Background()
-	plan, err := c.PlanHostnameIssue(ctx, issueRequest(ca))
+// TestPlansApplyOnce guards against a retried or concurrent Apply repeating
+// its writes, such as uploading a second certificate.
+func TestPlansApplyOnce(t *testing.T) {
+	t.Run("issue", func(t *testing.T) {
+		c, fake, ca := setup(t, 0)
+		ctx := context.Background()
+		plan, err := c.PlanHostnameIssue(ctx, issueRequest(ca))
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		errs := make(chan error, 2)
+		for range 2 {
+			go func() {
+				_, err := plan.Apply(ctx)
+				errs <- err
+			}()
+		}
+		var applied, refused int
+		for range 2 {
+			switch err := <-errs; {
+			case err == nil:
+				applied++
+			case errors.Is(err, aopctl.ErrPlanApplied):
+				refused++
+			default:
+				t.Errorf("apply: %v", err)
+			}
+		}
+		if applied != 1 || refused != 1 {
+			t.Errorf("%d applies succeeded and %d were refused, want 1 and 1", applied, refused)
+		}
+		if n := fake.Count(http.MethodPost, "/certificates"); n != 1 {
+			t.Errorf("sent %d uploads, want 1", n)
+		}
+	})
+
+	t.Run("associate", func(t *testing.T) {
+		c, fake, ca := setup(t, 0)
+		ctx := context.Background()
+		plan, err := c.PlanHostnameAssociate(ctx, aopctl.HostnameAssociateRequest{CACert: ca.cert, CertID: "old-1", Hostnames: []string{hostB}})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if err := plan.Apply(ctx); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		if err := plan.Apply(ctx); !errors.Is(err, aopctl.ErrPlanApplied) {
+			t.Errorf("second apply: err = %v, want ErrPlanApplied", err)
+		}
+		if n := fake.Count(http.MethodPut, "/hostnames"); n != 1 {
+			t.Errorf("sent %d association requests, want 1", n)
+		}
+	})
+
+	t.Run("prune", func(t *testing.T) {
+		c, fake, ca := setup(t, 0)
+		fake.AddCert("spare", cftest.IssueLeaf(t, ca.cert, ca.key))
+		ctx := context.Background()
+		plan, err := c.PlanHostnamePrune(ctx, aopctl.HostnamePruneRequest{CACert: ca.cert, CertIDs: []string{"spare"}, Hostnames: []string{hostA}})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if _, err := plan.Apply(ctx); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		if _, err := plan.Apply(ctx); !errors.Is(err, aopctl.ErrPlanApplied) {
+			t.Errorf("second apply: err = %v, want ErrPlanApplied", err)
+		}
+		if n := fake.Count(http.MethodDelete, ""); n != 1 {
+			t.Errorf("sent %d deletes, want 1", n)
+		}
+	})
+}
+
+// TestHostnameIssuePlanHidesKey guards against a printed plan showing the
+// leaf's private key.
+func TestHostnameIssuePlanHidesKey(t *testing.T) {
+	c, _, ca := setup(t, 0)
+	plan, err := c.PlanHostnameIssue(context.Background(), issueRequest(ca))
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
+	for _, verb := range []string{"%v", "%+v", "%#v"} {
+		if out := fmt.Sprintf(verb, plan); strings.Contains(out, "PRIVATE KEY") {
+			t.Errorf("%s of the plan shows the private key:\n%s", verb, out)
+		}
+	}
+}
+
+// TestHostnamePruneAccessorsCopy checks that changing what an accessor
+// returns cannot change what Apply deletes.
+func TestHostnamePruneAccessorsCopy(t *testing.T) {
+	c, fake, ca := setup(t, 0)
+	fake.AddCert("spare", cftest.IssueLeaf(t, ca.cert, ca.key))
+	other := newCA(t)
+	fake.AddCert("foreign", cftest.IssueLeaf(t, other.cert, other.key))
+	fake.AddCert("unlisted", cftest.IssueLeaf(t, ca.cert, ca.key))
+	ctx := context.Background()
+	plan, err := c.PlanHostnamePrune(ctx, aopctl.HostnamePruneRequest{
+		CACert: ca.cert, CertIDs: []string{"spare", "foreign"}, Hostnames: []string{hostA},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	targets := plan.Targets()
+	if len(targets) != 1 || targets[0].ID != "spare" {
+		t.Fatalf("targets = %+v, want spare only", targets)
+	}
+	// foreign was skipped as not signed by the CA, and unlisted was never
+	// requested.
+	targets[0].ID = "foreign"
+	_ = append(targets, aopctl.PruneTarget{Certificate: aopctl.Certificate{ID: "unlisted"}})
+
 	res, err := plan.Apply(ctx)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if res.CertID != "new-1" || len(res.Superseded) != 1 || res.Superseded[0] != "old-1" {
-		t.Errorf("result = %+v, want new-1 superseding old-1", res)
+	var deleted []string
+	for _, r := range fake.Recorded() {
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, r.Path[strings.LastIndex(r.Path, "/")+1:])
+		}
 	}
-	if _, err := plan.Apply(ctx); !errors.Is(err, aopctl.ErrPlanApplied) {
-		t.Errorf("second apply: err = %v, want ErrPlanApplied", err)
-	}
-	if n := fake.Count(http.MethodPost, "/certificates"); n != 1 {
-		t.Errorf("sent %d uploads, want 1", n)
+	if strings.Join(deleted, ",") != "spare" || strings.Join(res.Deleted, ",") != "spare" {
+		t.Errorf("deleted %v (result %v), want spare only", deleted, res.Deleted)
 	}
 }
 
@@ -101,6 +208,27 @@ func TestHostnameIssueFailures(t *testing.T) {
 		}
 		if n := len(fake.Recorded()); n != 0 {
 			t.Errorf("sent %d requests, want none", n)
+		}
+	})
+
+	t.Run("context done before the upload", func(t *testing.T) {
+		c, fake, ca := setup(t, 0)
+		plan, err := c.PlanHostnameIssue(context.Background(), issueRequest(ca))
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = plan.Apply(ctx)
+		if _, ok := errors.AsType[*aopctl.UploadUnknownError](err); ok || !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled and not an unknown upload outcome", err)
+		}
+		if n := fake.Count(http.MethodPost, "/certificates"); n != 0 {
+			t.Errorf("sent %d uploads, want none", n)
+		}
+		// Nothing was sent, so the plan can still be applied.
+		if _, err := plan.Apply(context.Background()); err != nil {
+			t.Errorf("apply after the cancelled one: %v", err)
 		}
 	})
 

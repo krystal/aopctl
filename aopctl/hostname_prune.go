@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	"slices"
+	"sync/atomic"
 )
 
 // HostnamePruneRequest names the hostname certificates to delete and the
@@ -21,17 +23,31 @@ type HostnamePruneRequest struct {
 	Progress func(Event)
 }
 
-// HostnamePrunePlan lists the certificates to delete and those skipped.
+// HostnamePrunePlan lists the certificates to delete and those skipped. Its
+// accessors return copies, and Apply acts only on what the plan captured.
 type HostnamePrunePlan struct {
-	Hostnames []string
-	Targets   []PruneTarget
-	// Skipped holds the certificates that will not be deleted, in the
-	// order they were decided.
-	Skipped []PruneSkip
-
 	client   *Client
+	hosts    []string
+	targets  []PruneTarget
+	skipped  []PruneSkip
 	progress func(Event)
-	applied  bool
+	applied  atomic.Bool
+}
+
+// Hostnames returns the normalized hostnames.
+func (p *HostnamePrunePlan) Hostnames() []string { return slices.Clone(p.hosts) }
+
+// Targets returns the certificates Apply deletes, or waits for.
+func (p *HostnamePrunePlan) Targets() []PruneTarget { return slices.Clone(p.targets) }
+
+// Skipped returns the certificates that will not be deleted, in the order
+// they were decided.
+func (p *HostnamePrunePlan) Skipped() []PruneSkip {
+	skipped := slices.Clone(p.skipped)
+	for i := range skipped {
+		skipped[i].Hostnames = slices.Clone(skipped[i].Hostnames)
+	}
+	return skipped
 }
 
 // PruneTarget is a certificate a prune deletes, or waits for.
@@ -108,9 +124,9 @@ func (c *Client) PlanHostnamePrune(ctx context.Context, r HostnamePruneRequest) 
 		return nil, err
 	}
 
-	p := &HostnamePrunePlan{Hostnames: hosts, client: c, progress: r.Progress}
+	p := &HostnamePrunePlan{client: c, hosts: hosts, progress: r.Progress}
 	skip := func(s PruneSkip) {
-		p.Skipped = append(p.Skipped, s)
+		p.skipped = append(p.skipped, s)
 		emit(p.progress, CertificateSkipped{PruneSkip: s})
 	}
 	var targets []PruneTarget
@@ -150,7 +166,7 @@ func (c *Client) PlanHostnamePrune(ctx context.Context, r HostnamePruneRequest) 
 				continue
 			}
 		}
-		p.Targets = append(p.Targets, t)
+		p.targets = append(p.targets, t)
 	}
 	return p, nil
 }
@@ -159,7 +175,7 @@ func (c *Client) PlanHostnamePrune(ctx context.Context, r HostnamePruneRequest) 
 // excludes certificates already being deleted.
 func (p *HostnamePrunePlan) Deletes() int {
 	n := 0
-	for _, t := range p.Targets {
+	for _, t := range p.targets {
 		if !t.PendingDeletion {
 			n++
 		}
@@ -170,12 +186,12 @@ func (p *HostnamePrunePlan) Deletes() int {
 // Apply deletes each target and waits for the deletion to finish. Just
 // before each delete, it reads the hostnames' associations again and skips
 // a certificate that came into use. It returns ErrNotAllDeleted, with the
-// result, when a target was not deleted.
+// result, when a target was not deleted. Without a deadline on ctx, it polls
+// with no time limit.
 func (p *HostnamePrunePlan) Apply(ctx context.Context) (*PruneResult, error) {
-	if p.applied {
+	if !p.applied.CompareAndSwap(false, true) {
 		return nil, ErrPlanApplied
 	}
-	p.applied = true
 	c := p.client
 
 	res := &PruneResult{}
@@ -183,16 +199,16 @@ func (p *HostnamePrunePlan) Apply(ctx context.Context) (*PruneResult, error) {
 		res.NotDeleted = append(res.NotDeleted, PruneFailure{CertID: id, Err: err})
 		emit(p.progress, CertificateDeleteFailed{CertID: id, Err: err})
 	}
-	for _, t := range p.Targets {
+	for _, t := range p.targets {
 		id := t.ID
 		if !t.PendingDeletion {
 			// Catch a hostname pointed at this certificate after the plan.
-			current, err := c.readAssociations(ctx, p.Hostnames)
+			current, err := c.readAssociations(ctx, p.hosts)
 			if err != nil {
 				failed(id, err)
 				continue
 			}
-			if using := hostsUsing(p.Hostnames, current, id); len(using) > 0 {
+			if using := hostsUsing(p.hosts, current, id); len(using) > 0 {
 				res.NotDeleted = append(res.NotDeleted, PruneFailure{CertID: id, Hostnames: using})
 				emit(p.progress, CertificateRefused{CertID: id, Hostnames: using})
 				continue

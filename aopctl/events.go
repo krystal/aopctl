@@ -21,7 +21,7 @@ type AssociationRequested struct {
 }
 
 // CertificateSkipped reports a prune decision not to delete a certificate,
-// made while planning. HostnamePrunePlan.Skipped holds the same decisions.
+// made while planning. HostnamePrunePlan.Skipped returns the same decisions.
 type CertificateSkipped struct {
 	PruneSkip
 }

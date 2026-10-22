@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
+	"sync/atomic"
 )
 
 // HostnameIssueRequest describes a new leaf and the hostnames to point at it.
@@ -27,23 +29,39 @@ type HostnameIssueRequest struct {
 }
 
 // HostnameIssuePlan is a new leaf, checked against the zone and ready to
-// upload and roll out.
+// upload and roll out. Its accessors return copies, and Apply acts only on
+// what the plan captured.
 type HostnameIssuePlan struct {
-	// Leaf is the new certificate. Its key is only ever sent in the upload.
-	Leaf      *x509.Certificate
-	Hostnames []string
-	// Current holds each hostname's association when planned. A nil value
-	// means none.
-	Current map[string]*Association
-	// SignedByCA records which of the zone's hostname certificates the CA
-	// signed, keyed by hostname certificate ID.
-	SignedByCA map[string]bool
-
-	client     *Client
-	leafKeyPEM string
+	client  *Client
+	leaf    *x509.Certificate
+	leafPEM string
+	// leafKey is encoded only for the upload. It holds a pointer, which fmt
+	// prints as an address, so printing the plan does not show the key.
+	leafKey    crypto.Signer
+	hosts      []string
+	current    map[string]*Association
+	signedByCA map[string]bool
 	progress   func(Event)
-	applied    bool
+	applied    atomic.Bool
 }
+
+// Leaf returns a copy of the new certificate. Its key is only ever sent in
+// the upload.
+func (p *HostnameIssuePlan) Leaf() *x509.Certificate {
+	leaf := *p.leaf
+	return &leaf
+}
+
+// Hostnames returns the normalized hostnames.
+func (p *HostnameIssuePlan) Hostnames() []string { return slices.Clone(p.hosts) }
+
+// Current returns each hostname's association when planned. A nil value
+// means none.
+func (p *HostnameIssuePlan) Current() map[string]*Association { return cloneAssociations(p.current) }
+
+// SignedByCA returns which of the zone's hostname certificates the CA
+// signed, keyed by hostname certificate ID.
+func (p *HostnameIssuePlan) SignedByCA() map[string]bool { return maps.Clone(p.signedByCA) }
 
 // HostnameIssueResult describes a completed rollout.
 type HostnameIssueResult struct {
@@ -77,11 +95,6 @@ func (c *Client) PlanHostnameIssue(ctx context.Context, r HostnameIssueRequest) 
 	if err := verifyLeaf(leaf, r.CACert, now); err != nil {
 		return nil, fmt.Errorf("the new leaf does not verify against the CA: %w", err)
 	}
-	leafKeyPEM, err := EncodePrivateKeyPEM(leafKey)
-	if err != nil {
-		return nil, err
-	}
-
 	certs, err := c.cf.listCerts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list certificates: %w", err)
@@ -103,12 +116,13 @@ func (c *Client) PlanHostnameIssue(ctx context.Context, r HostnameIssueRequest) 
 		return nil, err
 	}
 	return &HostnameIssuePlan{
-		Leaf:       leaf,
-		Hostnames:  hosts,
-		Current:    current,
-		SignedByCA: signed,
 		client:     c,
-		leafKeyPEM: leafKeyPEM,
+		leaf:       leaf,
+		leafPEM:    EncodeCertificatePEM(leaf),
+		leafKey:    leafKey,
+		hosts:      hosts,
+		current:    current,
+		signedByCA: signed,
 		progress:   r.Progress,
 	}, nil
 }
@@ -119,15 +133,23 @@ func (c *Client) PlanHostnameIssue(ctx context.Context, r HostnameIssueRequest) 
 //
 // An upload that may have created a certificate fails with
 // *UploadUnknownError, and a failure after the upload with
-// *HostnameRolloutError.
+// *HostnameRolloutError. A context that is already done fails before the
+// upload, and leaves the plan unapplied. Without a deadline on ctx, Apply
+// polls with no time limit.
 func (p *HostnameIssuePlan) Apply(ctx context.Context) (*HostnameIssueResult, error) {
-	if p.applied {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("upload not sent: %w", err)
+	}
+	if !p.applied.CompareAndSwap(false, true) {
 		return nil, ErrPlanApplied
 	}
-	p.applied = true
 	c := p.client
 
-	newID, err := c.cf.uploadCert(ctx, EncodeCertificatePEM(p.Leaf), p.leafKeyPEM)
+	leafKeyPEM, err := EncodePrivateKeyPEM(p.leafKey)
+	if err != nil {
+		return nil, err
+	}
+	newID, err := c.cf.uploadCert(ctx, p.leafPEM, leafKeyPEM)
 	// Only a Cloudflare 4xx shows that no certificate was created. A 5xx, a
 	// 2xx or a response that could not be read may follow a create.
 	if apiErr, ok := errors.AsType[*apiError](err); ok && (!apiErr.decoded || apiErr.status < 400 || apiErr.status > 499) {
@@ -143,10 +165,10 @@ func (p *HostnameIssuePlan) Apply(ctx context.Context) (*HostnameIssueResult, er
 
 	r := &HostnameRolloutError{
 		CertID:     newID,
-		Hostnames:  p.Hostnames,
-		Original:   p.Current,
+		Hostnames:  p.Hostnames(),
+		Original:   p.Current(),
 		Observed:   map[string]*Association{},
-		SignedByCA: p.SignedByCA,
+		SignedByCA: p.SignedByCA(),
 	}
 	if err := c.rollOut(ctx, r, p.progress); err != nil {
 		r.Err = err
@@ -155,8 +177,8 @@ func (p *HostnameIssuePlan) Apply(ctx context.Context) (*HostnameIssueResult, er
 
 	var superseded []string
 	seen := map[string]bool{}
-	for _, h := range p.Hostnames {
-		if id := inUseCertID(p.Current[h]); id != "" && id != newID && !seen[id] {
+	for _, h := range p.hosts {
+		if id := inUseCertID(p.current[h]); id != "" && id != newID && !seen[id] {
 			seen[id] = true
 			superseded = append(superseded, id)
 		}

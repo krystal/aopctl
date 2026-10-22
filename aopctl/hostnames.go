@@ -99,6 +99,23 @@ func (c *Client) readAssociations(ctx context.Context, hosts []string) (map[stri
 	return assocs, nil
 }
 
+// cloneAssociations deep-copies the associations, so a caller cannot change
+// the ones a plan holds.
+func cloneAssociations(assocs map[string]*Association) map[string]*Association {
+	clone := make(map[string]*Association, len(assocs))
+	for h, assoc := range assocs {
+		if assoc != nil {
+			c := *assoc
+			if c.Enabled != nil {
+				c.Enabled = new(*c.Enabled)
+			}
+			assoc = &c
+		}
+		clone[h] = assoc
+	}
+	return clone
+}
+
 // refuseDisabled stops a write that would re-enable AOP for a hostname
 // someone disabled on purpose.
 func refuseDisabled(hosts []string, assocs map[string]*Association) error {

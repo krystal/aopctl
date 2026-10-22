@@ -187,15 +187,15 @@ func (a *app) leafIssue(args []string) error {
 		return cliError(err)
 	}
 
-	leaf := plan.Leaf
+	leaf, planHosts, current := plan.Leaf(), plan.Hostnames(), plan.Current()
 	fmt.Fprintf(a.stderr, "New leaf:\n  subject:     %s\n  key type:    %s\n  expires:     %s\n  fingerprint: %s\nHostnames:\n",
 		leaf.Subject, describeKey(leaf.PublicKey), leaf.NotAfter.UTC().Format(time.RFC3339), aopctl.Fingerprint(leaf))
-	for _, h := range plan.Hostnames {
-		current := "none"
-		if assoc := plan.Current[h]; assoc != nil {
-			current = fmt.Sprintf("%s (enabled=%s)", assoc.CertID, formatEnabled(assoc.Enabled))
+	for _, h := range planHosts {
+		state := "none"
+		if assoc := current[h]; assoc != nil {
+			state = fmt.Sprintf("%s (enabled=%s)", assoc.CertID, formatEnabled(assoc.Enabled))
 		}
-		fmt.Fprintf(a.stderr, "  %s: %s -> new\n", h, current)
+		fmt.Fprintf(a.stderr, "  %s: %s -> new\n", h, state)
 	}
 	if *dryRun {
 		fmt.Fprintln(a.stderr, "Dry run: nothing changed.")
@@ -217,8 +217,9 @@ func (a *app) leafIssue(args []string) error {
 		return nil
 	}
 	var ownIDs, otherIDs []string
+	signed := plan.SignedByCA()
 	for _, id := range result.Superseded {
-		if plan.SignedByCA[id] {
+		if signed[id] {
 			ownIDs = append(ownIDs, id)
 		} else {
 			otherIDs = append(otherIDs, id)
@@ -227,11 +228,11 @@ func (a *app) leafIssue(args []string) error {
 	fmt.Fprintf(a.stdout, "They no longer use: %s\n", strings.Join(result.Superseded, ", "))
 	fmt.Fprintln(a.stdout, "Delete those soon. Cloudflare's docs leave open which certificate a hostname uses while several exist:")
 	if len(ownIDs) > 0 {
-		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(ownIDs, " --cert-id "), hostnameFlags(plan.Hostnames))
+		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(ownIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	if len(otherIDs) > 0 {
 		fmt.Fprintf(a.stdout, "  %s\n", otherCANote(otherIDs))
-		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(otherIDs, " --cert-id "), hostnameFlags(plan.Hostnames))
+		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(otherIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	return nil
 }
@@ -344,8 +345,9 @@ func (a *app) leafAssociate(args []string) error {
 	if err != nil {
 		return cliError(err)
 	}
-	for _, h := range plan.Hostnames {
-		fmt.Fprintf(a.stderr, "  %s: %s -> %s\n", h, plan.Current[h].String(), plan.CertID)
+	current := plan.Current()
+	for _, h := range plan.Hostnames() {
+		fmt.Fprintf(a.stderr, "  %s: %s -> %s\n", h, current[h].String(), plan.CertID())
 	}
 	if *dryRun {
 		fmt.Fprintln(a.stderr, "Dry run: nothing changed.")
@@ -355,7 +357,7 @@ func (a *app) leafAssociate(args []string) error {
 	if err := plan.Apply(ctx); err != nil {
 		return cliError(err)
 	}
-	fmt.Fprintf(a.stdout, "The listed hostnames now use certificate %s.\n", plan.CertID)
+	fmt.Fprintf(a.stdout, "The listed hostnames now use certificate %s.\n", plan.CertID())
 	return nil
 }
 
@@ -502,15 +504,15 @@ func (a *app) leafPrune(args []string) error {
 		return cliError(err)
 	}
 	failed := false
-	for _, s := range plan.Skipped {
+	for _, s := range plan.Skipped() {
 		if s.Reason != aopctl.SkipAlreadyDeleted {
 			failed = true
 		}
 	}
 
-	if len(plan.Targets) > 0 {
+	if targets := plan.Targets(); len(targets) > 0 {
 		fmt.Fprintln(a.stderr, "Certificates to delete:")
-		for _, t := range plan.Targets {
+		for _, t := range targets {
 			state := t.Status
 			if t.PendingDeletion {
 				state += ", waiting for the earlier delete to finish"

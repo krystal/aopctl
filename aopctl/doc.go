@@ -12,7 +12,8 @@
 // through the request's Progress callback and returns typed errors, such as
 // *UploadUnknownError and *HostnameRolloutError, that carry what a caller
 // needs to resume or roll back. A context deadline is the time budget for
-// both steps.
+// both steps. Without one, Apply polls Cloudflare with no time limit, so set
+// one.
 //
 // A Client is safe for concurrent use. Plans are not.
 package aopctl
