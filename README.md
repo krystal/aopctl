@@ -50,7 +50,7 @@ release only once it is that old, unless you add `github:krystal/aopctl` to
 
 ### With go install
 
-`go install` builds `aopctl` from source and needs Go 1.22 or later:
+`go install` builds `aopctl` from source and needs Go 1.26 or later:
 
 ```sh
 go install github.com/krystal/aopctl@latest
