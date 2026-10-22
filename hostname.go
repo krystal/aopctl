@@ -114,10 +114,16 @@ func (a *app) progress(e aopctl.Event) {
 			fmt.Fprintf(a.stderr, "Refused %s: not found\n", e.CertID)
 		case aopctl.SkipInUse:
 			fmt.Fprintf(a.stderr, "Refused %s: still used by %s\n", e.CertID, strings.Join(e.Hostnames, ", "))
+		case aopctl.SkipLastActive:
+			fmt.Fprintf(a.stderr, "Refused %s: it is the last active zone certificate and zone-level AOP is enabled. Upload a replacement with aopctl zone issue first.\n", e.CertID)
 		default:
 			fmt.Fprintf(a.stderr, "Refused %s: %v\n", e.CertID, cliError(e.Err))
 		}
 	case aopctl.CertificateRefused:
+		if e.Reason == aopctl.SkipLastActive {
+			fmt.Fprintf(a.stderr, "Refused %s: it is now the last active zone certificate and zone-level AOP is enabled\n", e.CertID)
+			break
+		}
 		fmt.Fprintf(a.stderr, "Refused %s: now used by %s\n", e.CertID, strings.Join(e.Hostnames, ", "))
 	case aopctl.CertificateDeleteFailed:
 		fmt.Fprintf(a.stderr, "Failed %s: %v\n", e.CertID, e.Err)
@@ -188,8 +194,8 @@ func (a *app) hostnameIssue(args []string) error {
 	}
 
 	leaf, planHosts, current := plan.Leaf(), plan.Hostnames(), plan.Current()
-	fmt.Fprintf(a.stderr, "New leaf:\n  subject:     %s\n  key type:    %s\n  expires:     %s\n  fingerprint: %s\nHostnames:\n",
-		leaf.Subject, describeKey(leaf.PublicKey), leaf.NotAfter.UTC().Format(time.RFC3339), aopctl.Fingerprint(leaf))
+	printLeaf(a.stderr, leaf)
+	fmt.Fprintln(a.stderr, "Hostnames:")
 	for _, h := range planHosts {
 		state := "none"
 		if assoc := current[h]; assoc != nil {

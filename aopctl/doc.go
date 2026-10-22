@@ -1,6 +1,10 @@
 // Package aopctl manages a dedicated client CA for Cloudflare Authenticated
-// Origin Pulls (AOP) and the per-hostname leaf certificates it issues. It is
-// the library behind the aopctl command.
+// Origin Pulls (AOP) and the per-hostname and zone-level leaf certificates
+// it issues. It is the library behind the aopctl command.
+//
+// Hostname workflows manage per-hostname AOP, and Zone workflows manage
+// zone-level AOP. Zone workflows never turn zone-level AOP off, and never
+// read or change the zone's global AOP setting.
 //
 // The package reads no environment variables, writes nothing to standard
 // output or standard error, and never prompts. Callers supply the inputs,
@@ -10,10 +14,10 @@
 // checks the inputs and reads the zone without changing anything, and the
 // plan's Apply makes the changes, at most once. Apply reports progress
 // through the request's Progress callback and returns typed errors, such as
-// *UploadUnknownError and *HostnameRolloutError, that carry what a caller
-// needs to resume or roll back. A context deadline is the time budget for
-// both steps. Without one, Apply polls Cloudflare with no time limit, so set
-// one.
+// *UploadUnknownError, *HostnameRolloutError and *ZoneRolloutError, that
+// carry what a caller needs to resume or roll back. A context deadline is
+// the time budget for both steps. Without one, Apply polls Cloudflare with
+// no time limit, so set one.
 //
 // A Client is safe for concurrent use. Plans are not.
 package aopctl

@@ -1,5 +1,6 @@
 // Command aopctl manages a dedicated client CA for Cloudflare Authenticated
-// Origin Pulls (AOP) and the per-hostname leaf certificates it issues.
+// Origin Pulls (AOP) and the per-hostname and zone-level leaf certificates
+// it issues.
 //
 // Secrets come from environment variables, for example through
 // "op run --env-file", and keys are never written to disk.
@@ -28,14 +29,19 @@ Commands:
   hostname associate  Point the hostnames at an existing leaf
   hostname status     List leaf certificates and hostname associations
   hostname prune      Delete the named leaf certificates
+  zone issue          Issue a zone-level leaf and upload it
+  zone enable         Turn on zone-level AOP
+  zone status         Show the zone-level AOP setting and certificates
+  zone prune          Delete the named zone-level certificates
   version             Print the aopctl version
 
 Environment:
   AOP_CA_CERT           CA certificate PEM
-  AOP_CA_KEY            CA private key PEM (PKCS#8), for hostname issue
+  AOP_CA_KEY            CA private key PEM (PKCS#8), for hostname and zone issue
   CLOUDFLARE_API_TOKEN  Zone > SSL and Certificates > Edit
   CLOUDFLARE_ZONE_ID    the zone's ID
-  AOP_HOSTNAMES         hostnames this CA serves, comma- or space-separated
+  AOP_HOSTNAMES         hostnames this CA serves, comma- or space-separated,
+                        for the hostname commands
 
 Run "aopctl <command> -h" for a command's flags.
 `
@@ -138,6 +144,10 @@ func (a *app) dispatch(args []string) error {
 		"hostname associate": a.hostnameAssociate,
 		"hostname status":    a.hostnameStatus,
 		"hostname prune":     a.hostnamePrune,
+		"zone issue":         a.zoneIssue,
+		"zone enable":        a.zoneEnable,
+		"zone status":        a.zoneStatus,
+		"zone prune":         a.zonePrune,
 	}
 	if len(args) == 0 {
 		fmt.Fprint(a.stderr, usageText)
@@ -156,7 +166,7 @@ func (a *app) dispatch(args []string) error {
 			return cmd(args[2:])
 		}
 	}
-	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "hostname" || isVersion(args[0])) {
+	if len(args) == 2 && isHelp(args[1]) && (args[0] == "ca" || args[0] == "hostname" || args[0] == "zone" || isVersion(args[0])) {
 		fmt.Fprint(a.stderr, usageText)
 		return flag.ErrHelp
 	}

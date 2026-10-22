@@ -21,15 +21,20 @@ type AssociationRequested struct {
 }
 
 // CertificateSkipped reports a prune decision not to delete a certificate,
-// made while planning. HostnamePrunePlan.Skipped returns the same decisions.
+// made while planning. HostnamePrunePlan.Skipped and ZonePrunePlan.Skipped
+// return the same decisions.
 type CertificateSkipped struct {
 	PruneSkip
 }
 
-// CertificateRefused reports a prune target that came into use after the
-// plan, so it was not deleted.
+// CertificateRefused reports a prune target that was not deleted because a
+// check just before its delete failed: a listed hostname came to use it
+// (SkipInUse), or it became the last active zone-level certificate
+// (SkipLastActive).
 type CertificateRefused struct {
-	CertID    string
+	CertID string
+	Reason SkipReason
+	// Hostnames lists the hostnames using the certificate, for SkipInUse.
 	Hostnames []string
 }
 

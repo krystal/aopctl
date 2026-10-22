@@ -21,14 +21,17 @@ func isTransient(err error) bool {
 	return apiErr.transport || apiErr.status == http.StatusTooManyRequests || apiErr.status >= 500
 }
 
+// certGetter reads one hostname or zone certificate.
+type certGetter func(ctx context.Context, id string) (*Certificate, error)
+
 // waitForCert polls an uploaded certificate until it is active.
-func (c *Client) waitForCert(ctx context.Context, id string) error {
+func (c *Client) waitForCert(ctx context.Context, get certGetter, id string) error {
 	last := "last status unknown"
 	timedOut := func(err error) error {
 		return &timeoutError{msg: fmt.Sprintf("timed out waiting for certificate %s to become active: %s", id, last), err: err}
 	}
 	for {
-		cert, err := c.cf.getCert(ctx, id)
+		cert, err := get(ctx, id)
 		switch {
 		case err == nil:
 			last = "last status " + cert.Status
@@ -111,13 +114,13 @@ func associationTimeout(id string, pending []string, observed map[string]*Associ
 }
 
 // waitForDeletion polls until the certificate is gone or deleted.
-func (c *Client) waitForDeletion(ctx context.Context, id string) error {
+func (c *Client) waitForDeletion(ctx context.Context, get certGetter, id string) error {
 	last := "last status unknown"
 	timedOut := func(err error) error {
 		return &timeoutError{msg: "timed out waiting for the delete to finish: " + last, err: err}
 	}
 	for {
-		cert, err := c.cf.getCert(ctx, id)
+		cert, err := get(ctx, id)
 		switch {
 		case isNotFound(err):
 			return nil

@@ -37,8 +37,8 @@ type Client struct {
 }
 
 // NewClient returns a Client for the zone. The API token needs the zone's
-// SSL and Certificates permission: Read for HostnameStatus, and Edit for
-// the other workflows.
+// SSL and Certificates permission: Read for HostnameStatus and ZoneStatus,
+// and Edit for the other workflows.
 func NewClient(apiToken, zoneID string, opts Options) (*Client, error) {
 	if apiToken == "" {
 		return nil, errors.New("no API token")
