@@ -1,0 +1,83 @@
+name: Release
+
+# Attaches the release archives to a draft release that release-please
+# created, then publishes it. An immutable release's assets cannot change once
+# it is published, so publishing is the last step. The Release Please job in
+# CI starts this workflow for each release it creates. Its runs keep their
+# inputs, so re-run a failed run, or run it by hand from the branch the
+# release was cut from, to finish a draft.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the draft release, for example v0.1.0
+        required: true
+        type: string
+      latest:
+        description: Mark the release as the latest release (turn off for a release-*.x branch)
+        default: true
+        type: boolean
+
+permissions: {}
+
+# Runs for one tag never overlap, so a second run waits and then finds the
+# release already published.
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag }}
+
+env:
+  # Install exactly what mise.lock records.
+  MISE_LOCKED: "1"
+
+jobs:
+  assets:
+    name: Release assets
+    runs-on: ubuntu-latest
+    # Runs the workflow as reviewed on a release branch. This is only a
+    # filter: anyone who can push a branch can edit it.
+    if: >-
+      github.ref_name == 'main' || (
+        startsWith(github.ref_name, 'release-') &&
+        endsWith(github.ref_name, '.x')
+      )
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check that the release is a draft
+        run: |
+          is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::Release $TAG is already published, so its assets cannot change."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          # GoReleaser reads the version from the tag.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          github_token: ${{ github.token }}
+          # Apply the project's three-day cooldown to mise itself.
+          minimum_release_age: 3d
+          # Build release archives only from tools mise.lock verifies, never
+          # from a cache that another run wrote. zizmor's cache-poisoning
+          # audit does not check this workflow's triggers, so keep this.
+          cache: false
+      - run: mise run build:release
+      # --clobber replaces assets an earlier, failed attempt uploaded.
+      - name: Upload the archives to the draft release
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*_checksums.txt --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --verify-tag --latest="$LATEST"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ inputs.latest }}

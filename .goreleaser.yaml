@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: aopctl
+
+builds:
+  - main: .
+    binary: aopctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      # The v prefix matches the module version that go install reports.
+      - -s -w -X main.version=v{{ .Version }}
+    # Reproducible builds: file times come from the commit, not the build.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+# release-please writes the release notes and creates the draft release, and
+# CI uploads the archives to it. GoReleaser only builds them.
+changelog:
+  disable: true
+release:
+  disable: true
