@@ -9,3 +9,12 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      gomod:
+        patterns: ["*"]
