@@ -19,8 +19,9 @@ your hostnames apart from requests Cloudflare proxies for anyone else. The
 plugin README's [security model][plugin-security] explains why neither
 Cloudflare's IP ranges nor its shared AOP certificate can do that.
 
-`aopctl` reads secrets from environment variables, never writes a key to disk,
-and uses only the Go standard library.
+`aopctl` reads secrets from environment variables and never writes a key to
+disk. The `aopctl` library package uses only the Go standard library, and the
+command line uses [cobra](https://github.com/spf13/cobra).
 
 [plugin]: https://github.com/krystal/traefik-plugin-cloudflare-origin
 [plugin-security]: https://github.com/krystal/traefik-plugin-cloudflare-origin#security-model
