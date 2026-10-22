@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/krystal/aopctl/aopctl"
+	"github.com/krystal/aopctl/internal/cftest"
 )
 
 const (
@@ -23,30 +27,30 @@ const (
 func issueHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.fake.addCert("old-1", h.ca.issue(t))
-	h.fake.addCert("old-2", h.ca.issue(t))
-	h.fake.setAssoc(hostA, "old-1", new(true))
-	h.fake.setAssoc(hostB, "old-1", new(true))
-	h.fake.setAssoc(hostC, "old-2", new(true))
+	h.fake.AddCert("old-1", h.ca.issue(t))
+	h.fake.AddCert("old-2", h.ca.issue(t))
+	h.fake.SetAssoc(hostA, "old-1", new(true))
+	h.fake.SetAssoc(hostB, "old-1", new(true))
+	h.fake.SetAssoc(hostC, "old-2", new(true))
 	h.env["AOP_HOSTNAMES"] = strings.Join([]string{hostA, hostB, hostC, hostD}, ",")
 	return h
 }
 
 // requestsAfter returns the requests recorded after the first one matching
 // method and suffix.
-func requestsAfter(reqs []fakeRequest, method, suffix string) []fakeRequest {
+func requestsAfter(reqs []cftest.Request, method, suffix string) []cftest.Request {
 	for i, r := range reqs {
-		if r.method == method && strings.HasSuffix(r.path, suffix) {
+		if r.Method == method && strings.HasSuffix(r.Path, suffix) {
 			return reqs[i+1:]
 		}
 	}
 	return nil
 }
 
-func countIn(reqs []fakeRequest, method, suffix string) int {
+func countIn(reqs []cftest.Request, method, suffix string) int {
 	n := 0
 	for _, r := range reqs {
-		if r.method == method && strings.HasSuffix(r.path, suffix) {
+		if r.Method == method && strings.HasSuffix(r.Path, suffix) {
 			n++
 		}
 	}
@@ -59,7 +63,7 @@ func TestLeafIssueDryRun(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
-	if w := h.fake.writes(); len(w) != 0 {
+	if w := h.fake.Writes(); len(w) != 0 {
 		t.Errorf("dry run sent %d write requests", len(w))
 	}
 	for _, want := range []string{
@@ -80,31 +84,31 @@ func TestLeafIssue(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
-	reqs := h.fake.recorded()
+	reqs := h.fake.Recorded()
 
 	var upload struct {
 		Certificate string `json:"certificate"`
 		PrivateKey  string `json:"private_key"`
 	}
 	for _, r := range reqs {
-		if r.method == http.MethodPost {
-			if err := json.Unmarshal(r.body, &upload); err != nil {
+		if r.Method == http.MethodPost {
+			if err := json.Unmarshal(r.Body, &upload); err != nil {
 				t.Fatalf("upload body: %v", err)
 			}
 		}
 	}
-	leaf, err := parseCertPEM(upload.Certificate)
+	leaf, err := aopctl.ParseCertificatePEM(upload.Certificate)
 	if err != nil {
 		t.Fatalf("uploaded certificate: %v", err)
 	}
-	if err := verifyLeaf(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)); err != nil {
+	if err := cftest.VerifyClientAuth(leaf, h.ca.cert, leaf.NotBefore.Add(2*time.Hour)); err != nil {
 		t.Errorf("uploaded leaf does not verify for client auth: %v", err)
 	}
-	key, err := parseKeyPEM(upload.PrivateKey)
+	key, err := aopctl.ParsePrivateKeyPEM(upload.PrivateKey)
 	if err != nil {
 		t.Fatalf("uploaded key is not PKCS#8: %v", err)
 	}
-	if !keyMatchesCert(leaf, key) {
+	if !cftest.KeyMatches(leaf, key) {
 		t.Error("uploaded key does not match the uploaded certificate")
 	}
 	keyLine := strings.Split(upload.PrivateKey, "\n")[1]
@@ -127,8 +131,8 @@ func TestLeafIssue(t *testing.T) {
 		t.Fatal("want exactly one PUT")
 	}
 	for _, r := range reqs {
-		if r.method == http.MethodPut {
-			if err := json.Unmarshal(r.body, &put); err != nil {
+		if r.Method == http.MethodPut {
+			if err := json.Unmarshal(r.Body, &put); err != nil {
 				t.Fatalf("PUT body: %v", err)
 			}
 		}
@@ -148,7 +152,7 @@ func TestLeafIssue(t *testing.T) {
 		if countIn(afterPut, http.MethodGet, "/hostnames/"+host) < 2 {
 			t.Errorf("did not poll %s until active", host)
 		}
-		if got := h.fake.assocCertID(host); got != "new-1" {
+		if got := h.fake.AssocCertID(host); got != "new-1" {
 			t.Errorf("%s uses %q, want new-1", host, got)
 		}
 	}
@@ -170,24 +174,24 @@ func TestLeafIssueFailures(t *testing.T) {
 	t.Run("no free slot", func(t *testing.T) {
 		h := issueHarness(t)
 		for i := range 8 {
-			h.fake.addCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
+			h.fake.AddCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 		}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Errorf("sent %d write requests", len(w))
 		}
 	})
 
 	t.Run("upload transport error", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPost {
 				return false
 			}
-			resetConnection(t, w)
+			cftest.ResetConnection(t, w)
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
@@ -197,61 +201,61 @@ func TestLeafIssueFailures(t *testing.T) {
 		if strings.Contains(stderr, "To resume") {
 			t.Errorf("printed recovery commands without a certificate ID:\n%s", stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 	})
 
 	t.Run("upload body cut off", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPost {
 				return false
 			}
-			writeCutOff(t, w, http.StatusOK)
+			cftest.WriteCutOff(t, w, http.StatusOK)
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "HTTP 200: unexpected EOF") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 	})
 
 	t.Run("upload result with an undecodable ID", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPost {
 				return false
 			}
-			writeEnvelope(w, http.StatusOK, map[string]any{"id": 1, "status": "initializing"}, nil)
+			cftest.WriteEnvelope(w, http.StatusOK, map[string]any{"id": 1, "status": "initializing"}, nil)
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl leaf status before retrying") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 	})
 
 	t.Run("upload rejected", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPost {
 				return false
 			}
-			writeAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
+			cftest.WriteAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "upload failed") || strings.Contains(stderr, "outcome unknown") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 	})
@@ -268,18 +272,18 @@ func TestLeafIssueFailures(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := issueHarness(t)
-			h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+			h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 				if r.Method != http.MethodPost {
 					return false
 				}
-				writeRaw(w, tt.status, "application/json", tt.body)
+				cftest.WriteRaw(w, tt.status, "application/json", tt.body)
 				return true
 			}
 			code, _, stderr := h.run("leaf", "issue")
 			if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl leaf status before retrying") {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
-			if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+			if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 				t.Errorf("sent %d PUTs", n)
 			}
 		})
@@ -287,25 +291,25 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("certificate never active", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.uploadStatuses = []string{"pending_deployment"}
+		h.fake.UploadStatuses = []string{"pending_deployment"}
 		h.waitLimit = 3
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last status pending_deployment") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 	})
 
 	t.Run("deployment timed out", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.uploadStatuses = []string{"pending_deployment", statusDeploymentTimedOut}
+		h.fake.UploadStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "certificate new-1 is deployment_timed_out") || !strings.Contains(stderr, "New certificate: new-1") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
 		// leaf associate refuses a certificate that is not active, and no
@@ -342,11 +346,11 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("PUT fails", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPut {
 				return false
 			}
-			writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
@@ -354,7 +358,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
 		// A PUT is not a polling read, so a 5xx is not retried.
-		if n := h.fake.count(http.MethodPut, "/hostnames"); n != 1 {
+		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 1 {
 			t.Errorf("sent %d PUTs, want 1", n)
 		}
 		for _, want := range []string{
@@ -371,7 +375,7 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("association never active", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.assocStatuses = []string{"pending_deployment"}
+		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.waitLimit = 4
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 {
@@ -390,9 +394,9 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("preflight association error", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/hostnames/"+hostB) {
-				writeAPIError(w, http.StatusNotFound, 1000, "not found")
+				cftest.WriteAPIError(w, http.StatusNotFound, 1000, "not found")
 				return true
 			}
 			return false
@@ -401,23 +405,23 @@ func TestLeafIssueFailures(t *testing.T) {
 		if code != 1 || !strings.Contains(stderr, "read association for b.example.com") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Errorf("sent %d write requests", len(w))
 		}
 	})
 
 	t.Run("preflight association without a cert_id", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/hostnames/"+hostD) {
-				writeRaw(w, http.StatusOK, "application/json", `{"success":true,"errors":[],"messages":[],"result":null}`)
+				cftest.WriteRaw(w, http.StatusOK, "application/json", `{"success":true,"errors":[],"messages":[],"result":null}`)
 				return true
 			}
 			return false
 		}
 		h.waitLimit = 20
 		code, _, stderr := h.run("leaf", "issue")
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Fatalf("sent %d write requests", len(w))
 		}
 		if code != 1 || !strings.Contains(stderr, "read association for d.example.com") {
@@ -427,12 +431,12 @@ func TestLeafIssueFailures(t *testing.T) {
 
 	t.Run("disabled hostname", func(t *testing.T) {
 		h := issueHarness(t)
-		h.fake.setAssoc(hostC, "old-2", new(false))
+		h.fake.SetAssoc(hostC, "old-2", new(false))
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "c.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Errorf("sent %d write requests", len(w))
 		}
 	})
@@ -441,19 +445,19 @@ func TestLeafIssueFailures(t *testing.T) {
 // A response to the upload whose other fields drifted still yields the ID.
 func TestLeafIssueUploadDrift(t *testing.T) {
 	h := issueHarness(t)
-	h.fake.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	h.fake.Hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
 		if r.Method != http.MethodPost {
 			return false
 		}
-		h.fake.upload(httptest.NewRecorder(), body)
-		writeEnvelope(w, http.StatusOK, map[string]any{"id": "new-1", "status": "initializing", "expires_on": 1893456000}, nil)
+		h.fake.Upload(httptest.NewRecorder(), body)
+		cftest.WriteEnvelope(w, http.StatusOK, map[string]any{"id": "new-1", "status": "initializing", "expires_on": 1893456000}, nil)
 		return true
 	}
 	code, stdout, stderr := h.run("leaf", "issue")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
-	reqs := h.fake.recorded()
+	reqs := h.fake.Recorded()
 	if n := countIn(requestsAfter(reqs, http.MethodPost, "/certificates"), http.MethodGet, "/certificates/new-1"); n < 2 {
 		t.Errorf("polled new-1 %d times after the upload, want it polled to active", n)
 	}
@@ -469,7 +473,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 	// with those statuses, after a PUT when afterPut is set.
 	failFirst := func(h *harness, suffix string, afterPut bool, statuses ...int) {
 		put := false
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodPut {
 				put = true
 			}
@@ -484,7 +488,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 				_, _ = io.WriteString(w, "rate limited")
 				return true
 			}
-			writeAPIError(w, status, 1000, "temporarily unavailable")
+			cftest.WriteAPIError(w, status, 1000, "temporarily unavailable")
 			return true
 		}
 	}
@@ -497,7 +501,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if got := h.fake.assocCertID(hostA); got != "new-1" {
+		if got := h.fake.AssocCertID(hostA); got != "new-1" {
 			t.Errorf("%s uses %q, want new-1", hostA, got)
 		}
 	})
@@ -510,7 +514,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := countIn(requestsAfter(h.fake.recorded(), http.MethodPut, "/hostnames"), http.MethodGet, "/hostnames/"+hostA); n < 4 {
+		if n := countIn(requestsAfter(h.fake.Recorded(), http.MethodPut, "/hostnames"), http.MethodGet, "/hostnames/"+hostA); n < 4 {
 			t.Errorf("polled %s %d times after the PUT, want the two failures retried", hostA, n)
 		}
 	})
@@ -523,7 +527,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last error: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 503") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodGet, "/certificates/new-1"); n != 3 {
+		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 3 {
 			t.Errorf("polled %d times, want 3", n)
 		}
 	})
@@ -536,7 +540,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		if code != 1 || !strings.Contains(stderr, "check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 400") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodGet, "/certificates/new-1"); n != 1 {
+		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 1 {
 			t.Errorf("polled %d times, want 1", n)
 		}
 	})
@@ -551,7 +555,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 	// count of the GETs it answered.
 	failGets := func(h *harness, after, suffix string, n int, respond func(http.ResponseWriter)) func() int {
 		seen, failed := false, 0
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == after {
 				seen = true
 			}
@@ -563,8 +567,8 @@ func TestPollingIncompleteResponses(t *testing.T) {
 			return true
 		}
 		return func() int {
-			h.fake.mu.Lock()
-			defer h.fake.mu.Unlock()
+			h.fake.Mu.Lock()
+			defer h.fake.Mu.Unlock()
 			return failed
 		}
 	}
@@ -584,7 +588,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		t.Run(tt.name+" polling recovers from a cut-off body", func(t *testing.T) {
 			h := tt.setup(t)
 			h.waitLimit = 20
-			failed := failGets(h, tt.after, tt.suffix, 1, func(w http.ResponseWriter) { writeCutOff(t, w, http.StatusOK) })
+			failed := failGets(h, tt.after, tt.suffix, 1, func(w http.ResponseWriter) { cftest.WriteCutOff(t, w, http.StatusOK) })
 			code, _, stderr := h.run(tt.args...)
 			if code != 0 {
 				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
@@ -593,7 +597,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 				t.Fatalf("cut off %d bodies, want 1", n)
 			}
 			// The cut-off read, then at least two polls to finish.
-			if n := countIn(requestsAfter(h.fake.recorded(), tt.after, tt.afterPath), http.MethodGet, tt.suffix); n < 3 {
+			if n := countIn(requestsAfter(h.fake.Recorded(), tt.after, tt.afterPath), http.MethodGet, tt.suffix); n < 3 {
 				t.Errorf("polled %d times after the %s, want the cut-off read retried", n, tt.after)
 			}
 		})
@@ -605,7 +609,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		// Go's transport resends an idempotent request when a reused
 		// connection closes before the response, so the fake resets twice
 		// to make sure aopctl sees the error.
-		failGets(h, http.MethodPost, "/certificates/new-1", 2, func(w http.ResponseWriter) { resetConnection(t, w) })
+		failGets(h, http.MethodPost, "/certificates/new-1", 2, func(w http.ResponseWriter) { cftest.ResetConnection(t, w) })
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
@@ -621,13 +625,13 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
 		failGets(h, http.MethodPost, "/certificates/new-1", 1, func(w http.ResponseWriter) {
-			writeRaw(w, http.StatusOK, "text/html", "<html>maintenance</html>")
+			cftest.WriteRaw(w, http.StatusOK, "text/html", "<html>maintenance</html>")
 		})
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, `check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 200: undecodable response (content type "text/html")`) {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodGet, "/certificates/new-1"); n != 1 {
+		if n := h.fake.Count(http.MethodGet, "/certificates/new-1"); n != 1 {
 			t.Errorf("polled %d times, want 1", n)
 		}
 	})
@@ -639,7 +643,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 		h.waitLimit = 20
 		// hostA still reports old-1, timed out, for two polls after the PUT.
 		put, stale := false, 0
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodPut {
 				put = true
 				return false
@@ -648,8 +652,8 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 				return false
 			}
 			stale++
-			writeEnvelope(w, http.StatusOK, map[string]any{
-				"hostname": hostA, "cert_id": "old-1", "enabled": true, "status": statusDeploymentTimedOut,
+			cftest.WriteEnvelope(w, http.StatusOK, map[string]any{
+				"hostname": hostA, "cert_id": "old-1", "enabled": true, "status": cftest.StatusDeploymentTimedOut,
 			}, nil)
 			return true
 		}
@@ -657,7 +661,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if got := h.fake.assocCertID(hostA); got != "new-1" {
+		if got := h.fake.AssocCertID(hostA); got != "new-1" {
 			t.Errorf("%s uses %q, want new-1", hostA, got)
 		}
 	})
@@ -665,7 +669,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 	t.Run("timed out on the new certificate", func(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
-		h.fake.assocStatuses = []string{"pending_deployment", statusDeploymentTimedOut}
+		h.fake.AssocStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
 		code, _, stderr := h.run("leaf", "issue")
 		if code != 1 || !strings.Contains(stderr, "association for a.example.com is deployment_timed_out") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
@@ -692,13 +696,13 @@ func commandLines(output, prefix string) [][]string {
 func TestLeafIssueLastSlotRecovery(t *testing.T) {
 	h := issueHarness(t)
 	for i := range 7 {
-		h.fake.addCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
+		h.fake.AddCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 	}
-	h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+	h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 		if r.Method != http.MethodPut {
 			return false
 		}
-		writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+		cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 		return true
 	}
 	code, _, stderr := h.run("leaf", "issue")
@@ -710,18 +714,18 @@ func TestLeafIssueLastSlotRecovery(t *testing.T) {
 		t.Fatalf("want one resume command, got %q", resume)
 	}
 
-	h.fake.hook = nil
-	before := len(h.fake.recorded())
+	h.fake.Hook = nil
+	before := len(h.fake.Recorded())
 	code, _, stderr = h.run(resume[0]...)
 	if code != 0 {
 		t.Fatalf("resume: exit %d; stderr:\n%s", code, stderr)
 	}
 	for _, host := range []string{hostA, hostB, hostC, hostD} {
-		if got := h.fake.assocCertID(host); got != "new-1" {
+		if got := h.fake.AssocCertID(host); got != "new-1" {
 			t.Errorf("%s uses %q, want new-1", host, got)
 		}
 	}
-	if n := countIn(h.fake.recorded()[before:], http.MethodGet, "/certificates"); n != 0 {
+	if n := countIn(h.fake.Recorded()[before:], http.MethodGet, "/certificates"); n != 0 {
 		t.Errorf("resume listed certificates %d times; it must not need a free slot", n)
 	}
 }
@@ -729,13 +733,13 @@ func TestLeafIssueLastSlotRecovery(t *testing.T) {
 func TestLeafIssueRollbackOutput(t *testing.T) {
 	h := issueHarness(t)
 	// The PUT applies to hostA and hostC only, then fails.
-	h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+	h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 		if r.Method != http.MethodPut {
 			return false
 		}
-		h.fake.applyAssociation(hostA, "new-1", new(true))
-		h.fake.applyAssociation(hostC, "new-1", new(true))
-		writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+		h.fake.ApplyAssociation(hostA, "new-1", new(true))
+		h.fake.ApplyAssociation(hostC, "new-1", new(true))
+		cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 		return true
 	}
 	code, _, stderr := h.run("leaf", "issue")
@@ -767,14 +771,14 @@ func TestLeafIssueRollbackOutput(t *testing.T) {
 		t.Fatalf("rollback commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
-	h.fake.hook = nil
+	h.fake.Hook = nil
 	for _, args := range rollback {
 		if code, _, stderr := h.run(args...); code != 0 {
 			t.Fatalf("%v: exit %d; stderr:\n%s", args, code, stderr)
 		}
 	}
 	for host, want := range map[string]string{hostA: "old-1", hostB: "old-1", hostC: "old-2", hostD: ""} {
-		if got := h.fake.assocCertID(host); got != want {
+		if got := h.fake.AssocCertID(host); got != want {
 			t.Errorf("%s uses %q after rollback, want %q", host, got, want)
 		}
 	}
@@ -786,10 +790,10 @@ func TestLeafIssueOtherCA(t *testing.T) {
 	setup := func(t *testing.T) (*harness, *testCA) {
 		h := newHarness(t)
 		oldCA := newTestCA(t, 3650)
-		h.fake.addCert("old-1", oldCA.issue(t))
-		h.fake.addCert("cur-1", h.ca.issue(t))
-		h.fake.setAssoc(hostA, "old-1", new(true))
-		h.fake.setAssoc(hostB, "cur-1", new(true))
+		h.fake.AddCert("old-1", oldCA.issue(t))
+		h.fake.AddCert("cur-1", h.ca.issue(t))
+		h.fake.SetAssoc(hostA, "old-1", new(true))
+		h.fake.SetAssoc(hostB, "cur-1", new(true))
 		h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 		return h, oldCA
 	}
@@ -797,12 +801,12 @@ func TestLeafIssueOtherCA(t *testing.T) {
 	t.Run("rollback", func(t *testing.T) {
 		h, oldCA := setup(t)
 		// The PUT applies to hostA only, then fails.
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodPut {
 				return false
 			}
-			h.fake.applyAssociation(hostA, "new-1", new(true))
-			writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+			h.fake.ApplyAssociation(hostA, "new-1", new(true))
+			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		}
 		code, _, stderr := h.run("leaf", "issue")
@@ -820,12 +824,12 @@ func TestLeafIssueOtherCA(t *testing.T) {
 			t.Fatalf("want one rollback command for old-1, got %q", rollback)
 		}
 
-		h.fake.hook = nil
+		h.fake.Hook = nil
 		code, _, stderr = h.run(rollback[0]...)
 		if code != 1 || !strings.Contains(stderr, "certificate old-1 is not signed by AOP_CA_CERT") {
 			t.Errorf("with the new CA: exit %d; stderr:\n%s", code, stderr)
 		}
-		if got := h.fake.assocCertID(hostA); got != "new-1" {
+		if got := h.fake.AssocCertID(hostA); got != "new-1" {
 			t.Errorf("%s uses %q after a refused rollback, want new-1", hostA, got)
 		}
 
@@ -833,7 +837,7 @@ func TestLeafIssueOtherCA(t *testing.T) {
 		if code, _, stderr := h.run(rollback[0]...); code != 0 {
 			t.Fatalf("with the old CA: exit %d; stderr:\n%s", code, stderr)
 		}
-		if got := h.fake.assocCertID(hostA); got != "old-1" {
+		if got := h.fake.AssocCertID(hostA); got != "old-1" {
 			t.Errorf("%s uses %q after rollback, want old-1", hostA, got)
 		}
 	})
@@ -859,11 +863,11 @@ func TestLeafIssueOtherCA(t *testing.T) {
 func TestLeafAssociate(t *testing.T) {
 	setup := func(t *testing.T) *harness {
 		h := newHarness(t)
-		h.fake.addCert("good", h.ca.issue(t))
-		h.fake.addCert("foreign", newTestCA(t, 3650).issue(t))
-		h.fake.addCert("deploying", h.ca.issue(t), "pending_deployment")
+		h.fake.AddCert("good", h.ca.issue(t))
+		h.fake.AddCert("foreign", newTestCA(t, 3650).issue(t))
+		h.fake.AddCert("deploying", h.ca.issue(t), "pending_deployment")
 		h.env["AOP_HOSTNAMES"] = hostA + " " + hostB
-		h.fake.setAssoc(hostA, "old", new(true))
+		h.fake.SetAssoc(hostA, "old", new(true))
 		return h
 	}
 
@@ -878,7 +882,7 @@ func TestLeafAssociate(t *testing.T) {
 			if code != 1 || !strings.Contains(stderr, tt.want) {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
-			if w := h.fake.writes(); len(w) != 0 {
+			if w := h.fake.Writes(); len(w) != 0 {
 				t.Errorf("sent %d write requests", len(w))
 			}
 		})
@@ -886,12 +890,12 @@ func TestLeafAssociate(t *testing.T) {
 
 	t.Run("refuses a disabled hostname", func(t *testing.T) {
 		h := setup(t)
-		h.fake.setAssoc(hostB, "old", new(false))
+		h.fake.SetAssoc(hostB, "old", new(false))
 		code, _, stderr := h.run("leaf", "associate", "--cert-id", "good")
 		if code != 1 || !strings.Contains(stderr, "b.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Errorf("sent %d write requests", len(w))
 		}
 	})
@@ -905,7 +909,7 @@ func TestLeafAssociate(t *testing.T) {
 		if !strings.Contains(stderr, hostA+": old (enabled=true, status=active) -> good") || !strings.Contains(stderr, hostB+": none -> good") {
 			t.Errorf("stderr:\n%s", stderr)
 		}
-		if w := h.fake.writes(); len(w) != 0 {
+		if w := h.fake.Writes(); len(w) != 0 {
 			t.Errorf("sent %d write requests", len(w))
 		}
 	})
@@ -916,8 +920,8 @@ func TestLeafAssociate(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
-		reqs := h.fake.recorded()
-		if w := h.fake.writes(); len(w) != 1 || w[0].method != http.MethodPut {
+		reqs := h.fake.Recorded()
+		if w := h.fake.Writes(); len(w) != 1 || w[0].Method != http.MethodPut {
 			t.Errorf("writes = %+v, want one PUT", w)
 		}
 		afterPut := requestsAfter(reqs, http.MethodPut, "/hostnames")
@@ -925,7 +929,7 @@ func TestLeafAssociate(t *testing.T) {
 			if countIn(afterPut, http.MethodGet, "/hostnames/"+host) < 2 {
 				t.Errorf("did not poll %s until active", host)
 			}
-			if got := h.fake.assocCertID(host); got != "good" {
+			if got := h.fake.AssocCertID(host); got != "good" {
 				t.Errorf("%s uses %q", host, got)
 			}
 		}
@@ -938,11 +942,11 @@ func TestLeafAssociate(t *testing.T) {
 func TestLeafStatus(t *testing.T) {
 	h := newHarness(t)
 	minePEM := h.ca.issue(t)
-	h.fake.addCert("mine", minePEM)
-	h.fake.addCert("foreign", newTestCA(t, 3650).issue(t))
-	h.fake.setAssoc(hostA, "mine", new(true))
+	h.fake.AddCert("mine", minePEM)
+	h.fake.AddCert("foreign", newTestCA(t, 3650).issue(t))
+	h.fake.SetAssoc(hostA, "mine", new(true))
 	h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
-	mineCert, err := parseCertPEM(minePEM)
+	mineCert, err := aopctl.ParseCertificatePEM(minePEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -952,7 +956,7 @@ func TestLeafStatus(t *testing.T) {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
 	mine, foreign, _ := strings.Cut(strings.SplitN(stdout, "  mine\n", 2)[1], "  foreign\n")
-	for _, want := range []string{"status:    active", "subject:   existing leaf", "key type:  ECDSA P-256", "days left", "signed by AOP_CA_CERT: yes", "used by:   a.example.com", "fingerprint: " + fingerprint(mineCert)} {
+	for _, want := range []string{"status:    active", "subject:   existing leaf", "key type:  ECDSA P-256", "days left", "signed by AOP_CA_CERT: yes", "used by:   a.example.com", "fingerprint: " + aopctl.Fingerprint(mineCert)} {
 		if !strings.Contains(mine, want) {
 			t.Errorf("mine lacks %q:\n%s", want, mine)
 		}
@@ -977,19 +981,19 @@ func TestLeafStatus(t *testing.T) {
 func pruneHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.fake.addCert("used", h.ca.issue(t))
-	h.fake.addCert("old", h.ca.issue(t))
-	h.fake.addCert("spare", h.ca.issue(t))
-	h.fake.setAssoc(hostA, "used", new(true))
+	h.fake.AddCert("used", h.ca.issue(t))
+	h.fake.AddCert("old", h.ca.issue(t))
+	h.fake.AddCert("spare", h.ca.issue(t))
+	h.fake.SetAssoc(hostA, "used", new(true))
 	h.env["AOP_HOSTNAMES"] = hostA + "," + hostB
 	return h
 }
 
 func deletes(h *harness) []string {
 	var ids []string
-	for _, r := range h.fake.recorded() {
-		if r.method == http.MethodDelete {
-			ids = append(ids, r.path[strings.LastIndex(r.path, "/")+1:])
+	for _, r := range h.fake.Recorded() {
+		if r.Method == http.MethodDelete {
+			ids = append(ids, r.Path[strings.LastIndex(r.Path, "/")+1:])
 		}
 	}
 	return ids
@@ -1011,7 +1015,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 		if code != 1 || !strings.Contains(stderr, "no hostnames") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := len(h.fake.recorded()); n != 0 {
+		if n := len(h.fake.Recorded()); n != 0 {
 			t.Errorf("sent %d requests", n)
 		}
 	})
@@ -1029,7 +1033,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 
 	t.Run("other CA", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.addCert("foreign", newTestCA(t, 3650).issue(t))
+		h.fake.AddCert("foreign", newTestCA(t, 3650).issue(t))
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "foreign", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Refused foreign: certificate foreign is not signed by AOP_CA_CERT") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
@@ -1052,9 +1056,9 @@ func TestLeafPruneRefusals(t *testing.T) {
 
 	t.Run("preflight association error", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/hostnames/"+hostB) {
-				writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+				cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 				return true
 			}
 			return false
@@ -1071,9 +1075,9 @@ func TestLeafPruneRefusals(t *testing.T) {
 	for _, result := range []string{"null", "{}"} {
 		t.Run("association result "+result, func(t *testing.T) {
 			h := pruneHarness(t)
-			h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+			h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 				if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/hostnames/"+hostB) {
-					writeRaw(w, http.StatusOK, "application/json", `{"success":true,"errors":[],"messages":[],"result":`+result+`}`)
+					cftest.WriteRaw(w, http.StatusOK, "application/json", `{"success":true,"errors":[],"messages":[],"result":`+result+`}`)
 					return true
 				}
 				return false
@@ -1111,7 +1115,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 	// second, which happens just before the DELETE.
 	changeOnReread := func(h *harness, second func(w http.ResponseWriter) bool) {
 		reads := 0
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/hostnames/"+hostB) {
 				return false
 			}
@@ -1126,7 +1130,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 	t.Run("now associated", func(t *testing.T) {
 		h := pruneHarness(t)
 		changeOnReread(h, func(http.ResponseWriter) bool {
-			h.fake.assocs[hostB] = &fakeAssoc{certID: "old", enabled: new(true), statuses: []string{statusActive}}
+			h.fake.Assocs[hostB] = &cftest.Assoc{CertID: "old", Enabled: new(true), Statuses: []string{cftest.StatusActive}}
 			return false
 		})
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
@@ -1141,7 +1145,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 	t.Run("re-read fails", func(t *testing.T) {
 		h := pruneHarness(t)
 		changeOnReread(h, func(w http.ResponseWriter) bool {
-			writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		})
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
@@ -1221,14 +1225,14 @@ func TestLeafPruneCompletion(t *testing.T) {
 		if code != 0 || !strings.Contains(stderr, "Deleted old") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
-		if n := h.fake.count(http.MethodGet, "/certificates/old"); n < 3 {
+		if n := h.fake.Count(http.MethodGet, "/certificates/old"); n < 3 {
 			t.Errorf("polled %d times, want polling until gone", n)
 		}
 	})
 
 	t.Run("deletion timed out", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.deleteStatuses = []string{statusPendingDeletion, statusDeletionTimedOut}
+		h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion, cftest.StatusDeletionTimedOut}
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Failed old: the delete failed at Cloudflare: status deletion_timed_out") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
@@ -1237,9 +1241,9 @@ func TestLeafPruneCompletion(t *testing.T) {
 
 	t.Run("mixed results", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/old") {
-				writeAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+				cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 				return true
 			}
 			return false
@@ -1258,7 +1262,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 		// After old's DELETE, an intermediary answers its GETs with an HTML
 		// 404. spare's GETs reach Cloudflare's own 404 once it is gone.
 		deleted := false
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if !strings.HasSuffix(r.URL.Path, "/certificates/old") {
 				return false
 			}
@@ -1268,7 +1272,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 			if !deleted || r.Method != http.MethodGet {
 				return false
 			}
-			writeRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
+			cftest.WriteRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
 			return true
 		}
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
@@ -1285,11 +1289,11 @@ func TestLeafPruneCompletion(t *testing.T) {
 
 	t.Run("non-JSON 404 before deleting", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/certificates/old") {
 				return false
 			}
-			writeRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
+			cftest.WriteRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
 			return true
 		}
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
@@ -1303,7 +1307,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 
 	t.Run("already deleted", func(t *testing.T) {
 		h := pruneHarness(t)
-		h.fake.addCert("done", h.ca.issue(t), statusDeleted)
+		h.fake.AddCert("done", h.ca.issue(t), cftest.StatusDeleted)
 		code, _, stderr := h.run("leaf", "prune", "--cert-id", "done", "--yes")
 		if code != 0 || !strings.Contains(stderr, "Already deleted: done") || len(deletes(h)) != 0 {
 			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
@@ -1317,13 +1321,13 @@ func TestLeafPruneCompletion(t *testing.T) {
 		code      int
 		want      string
 	}{
-		{"already pending, then gone", []string{statusPendingDeletion, statusPendingDeletion, "gone"}, 0, 0, "Deleted pending"},
-		{"already pending, then timed out", []string{statusPendingDeletion, statusDeletionTimedOut}, 0, 1, "status deletion_timed_out"},
-		{"already pending, budget runs out", []string{statusPendingDeletion}, 3, 1, "timed out waiting for the delete to finish: last status pending_deletion"},
+		{"already pending, then gone", []string{cftest.StatusPendingDeletion, cftest.StatusPendingDeletion, "gone"}, 0, 0, "Deleted pending"},
+		{"already pending, then timed out", []string{cftest.StatusPendingDeletion, cftest.StatusDeletionTimedOut}, 0, 1, "status deletion_timed_out"},
+		{"already pending, budget runs out", []string{cftest.StatusPendingDeletion}, 3, 1, "timed out waiting for the delete to finish: last status pending_deletion"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := pruneHarness(t)
-			h.fake.addCert("pending", h.ca.issue(t), tt.statuses...)
+			h.fake.AddCert("pending", h.ca.issue(t), tt.statuses...)
 			h.waitLimit = tt.waitLimit
 			// No --yes and no terminal: a certificate that needs no DELETE
 			// needs no confirmation.
@@ -1357,7 +1361,7 @@ func TestBudgetRunsOut(t *testing.T) {
 	stallAfter := func(h *harness, write, suffix string, skip int) {
 		written := false
 		reads := 0
-		h.fake.hook = func(_ http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(_ http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == write {
 				written = true
 			}
@@ -1368,7 +1372,7 @@ func TestBudgetRunsOut(t *testing.T) {
 			if reads <= skip {
 				return false
 			}
-			stall(r)
+			cftest.Stall(r)
 			return true
 		}
 	}
@@ -1383,7 +1387,7 @@ func TestBudgetRunsOut(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := issueHarness(t)
-			h.fake.uploadStatuses = []string{"pending_deployment"}
+			h.fake.UploadStatuses = []string{"pending_deployment"}
 			tt.setup(h)
 			code, _, stderr := h.run("leaf", "issue", "--timeout", budget)
 			if code != 1 {
@@ -1392,7 +1396,7 @@ func TestBudgetRunsOut(t *testing.T) {
 			if got, want := errorLine(stderr), "aopctl: timed out waiting for certificate new-1 to become active: last status pending_deployment"; got != want {
 				t.Errorf("error = %q, want %q", got, want)
 			}
-			if n := h.fake.count(http.MethodPut, "/hostnames"); n != 0 {
+			if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 				t.Errorf("sent %d PUTs", n)
 			}
 		})
@@ -1404,8 +1408,8 @@ func TestBudgetRunsOut(t *testing.T) {
 	t.Run("association, budget ends in a wait", func(t *testing.T) {
 		t.Parallel()
 		h := issueHarness(t)
-		h.fake.uploadStatuses = []string{statusActive}
-		h.fake.assocStatuses = []string{"pending_deployment"}
+		h.fake.UploadStatuses = []string{cftest.StatusActive}
+		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.blockWaits = true
 		code, _, stderr := h.run("leaf", "issue", "--timeout", budget)
 		if code != 1 {
@@ -1421,12 +1425,12 @@ func TestBudgetRunsOut(t *testing.T) {
 	t.Run("association, budget ends in a read", func(t *testing.T) {
 		t.Parallel()
 		h := issueHarness(t)
-		h.fake.assocStatuses = []string{"pending_deployment"}
+		h.fake.AssocStatuses = []string{"pending_deployment"}
 		// In the second round, hostA becomes active and the read of hostB
 		// stalls.
 		put := false
 		reads := map[string]int{}
-		h.fake.hook = func(_ http.ResponseWriter, r *http.Request, _ []byte) bool {
+		h.fake.Hook = func(_ http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == http.MethodPut {
 				put = true
 			}
@@ -1437,9 +1441,9 @@ func TestBudgetRunsOut(t *testing.T) {
 			reads[host]++
 			switch {
 			case host == hostA && reads[host] == 2:
-				h.fake.assocs[hostA].statuses = []string{statusActive}
+				h.fake.Assocs[hostA].Statuses = []string{cftest.StatusActive}
 			case host == hostB && reads[host] == 2:
-				stall(r)
+				cftest.Stall(r)
 				return true
 			}
 			return false
@@ -1465,7 +1469,7 @@ func TestBudgetRunsOut(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := pruneHarness(t)
-			h.fake.deleteStatuses = []string{statusPendingDeletion}
+			h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion}
 			tt.setup(h)
 			code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes", "--timeout", budget)
 			if code != 1 || !strings.Contains(stderr, "Failed old: timed out waiting for the delete to finish: last status pending_deletion\n") {
@@ -1475,5 +1479,39 @@ func TestBudgetRunsOut(t *testing.T) {
 				t.Errorf("deleted %v, want old once", d)
 			}
 		})
+	}
+}
+
+func TestPagination(t *testing.T) {
+	h := newHarness(t)
+	h.fake.PerPage = 3
+	for i := 1; i <= 10; i++ {
+		h.fake.AddCert(fmt.Sprintf("cert-%02d", i), h.ca.issue(t))
+	}
+
+	code, stdout, stderr := h.run("leaf", "status")
+	if code != 0 {
+		t.Fatalf("status: exit %d; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Certificates (10 of 10)") || !strings.Contains(stdout, "cert-10") {
+		t.Errorf("status misses later pages:\n%s", stdout)
+	}
+
+	// cert-10 is alone on page 4, and it fills the last slot.
+	code, _, stderr = h.run("leaf", "issue", "--hostname", "app.example.com")
+	if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
+		t.Errorf("issue: exit %d; stderr:\n%s", code, stderr)
+	}
+	if n := h.fake.Count(http.MethodPost, "/certificates"); n != 0 {
+		t.Errorf("sent %d uploads, want none", n)
+	}
+	var pages []string
+	for _, r := range h.fake.Recorded() {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.Path, "/certificates") {
+			pages = append(pages, r.Query)
+		}
+	}
+	if got := strings.Join(pages, " "); got != "page=1 page=2 page=3 page=4 page=1 page=2 page=3 page=4" {
+		t.Errorf("list requests = %s", got)
 	}
 }

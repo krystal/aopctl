@@ -1,6 +1,11 @@
 package main
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/krystal/aopctl/aopctl"
 )
 
 const maxCertInput = 1 << 20
@@ -37,7 +44,7 @@ type opField struct {
 func (a *app) caCreate(args []string) error {
 	fs := a.flagSet("ca create", "[flags] | op item create --vault <vault> -")
 	name := fs.String("name", "aopctl AOP CA", "CA common name")
-	keyType := fs.String("key-type", keyTypeECP256, "key type: "+keyTypeECP256+" or "+keyTypeRSA3072)
+	keyType := fs.String("key-type", string(aopctl.KeyTypeECP256), "key type: "+string(aopctl.KeyTypeECP256)+" or "+string(aopctl.KeyTypeRSA3072))
 	days := fs.Int("days", 3650, "validity in days")
 	title := fs.String("title", "", "1Password item title (default: the common name)")
 	if err := parseFlags(fs, args); err != nil {
@@ -56,15 +63,15 @@ func (a *app) caCreate(args []string) error {
 		*title = *name
 	}
 
-	cert, key, err := createCA(*name, *keyType, *days, a.now())
+	cert, key, err := aopctl.CreateCA(aopctl.CARequest{CommonName: *name, KeyType: aopctl.KeyType(*keyType), Days: *days, Now: a.now()})
 	if err != nil {
 		return err
 	}
-	keyPEM, err := encodeKeyPEM(key)
+	keyPEM, err := aopctl.EncodePrivateKeyPEM(key)
 	if err != nil {
 		return err
 	}
-	fp := fingerprint(cert)
+	fp := aopctl.Fingerprint(cert)
 	expires := cert.NotAfter.UTC().Format(time.RFC3339)
 	item := opItem{
 		Title:    *title,
@@ -74,7 +81,7 @@ func (a *app) caCreate(args []string) error {
 				ID: "notesPlain", Type: "STRING", Purpose: "NOTES", Label: "notesPlain",
 				Value: fmt.Sprintf("Cloudflare Authenticated Origin Pulls client CA, created by aopctl. Expires %s.", expires),
 			},
-			{ID: "ca_cert", Type: "STRING", Label: "ca_cert", Value: encodeCertPEM(cert)},
+			{ID: "ca_cert", Type: "STRING", Label: "ca_cert", Value: aopctl.EncodeCertificatePEM(cert)},
 			{ID: "ca_key", Type: "CONCEALED", Label: "ca_key", Value: keyPEM},
 			{ID: "fingerprint_sha256", Type: "STRING", Label: "fingerprint_sha256", Value: fp},
 		},
@@ -123,22 +130,22 @@ func (a *app) caShow(args []string) error {
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
-	cert, err := parseCertPEM(string(data))
+	cert, err := aopctl.ParseCertificatePEM(string(data))
 	if err != nil {
 		return fmt.Errorf("stdin: %w", err)
 	}
-	warnings := caProfileWarnings(cert)
+	warnings := aopctl.CAProfileWarnings(cert)
 
 	if *secret != "" {
 		for _, w := range warnings {
 			fmt.Fprintf(a.stderr, "warning: %s\n", w)
 		}
-		writeSecretManifest(a.stdout, *secret, *namespace, encodeCertPEM(cert))
+		writeSecretManifest(a.stdout, *secret, *namespace, aopctl.EncodeCertificatePEM(cert))
 		return nil
 	}
 
 	fmt.Fprintf(a.stdout, "Subject:     %s\n", cert.Subject)
-	fmt.Fprintf(a.stdout, "Fingerprint: %s\n", fingerprint(cert))
+	fmt.Fprintf(a.stdout, "Fingerprint: %s\n", aopctl.Fingerprint(cert))
 	fmt.Fprintf(a.stdout, "Not before:  %s\n", cert.NotBefore.UTC().Format(time.RFC3339))
 	fmt.Fprintf(a.stdout, "Not after:   %s\n", cert.NotAfter.UTC().Format(time.RFC3339))
 	fmt.Fprintf(a.stdout, "Key type:    %s\n", describeKey(cert.PublicKey))
@@ -159,4 +166,45 @@ func writeSecretManifest(w io.Writer, name, namespace, certPEM string) {
 	for line := range strings.SplitSeq(strings.TrimSpace(certPEM), "\n") {
 		fmt.Fprintf(w, "    %s\n", line)
 	}
+}
+
+// loadCA parses the CA pair from AOP_CA_CERT and AOP_CA_KEY and checks that
+// the key matches.
+func loadCA(certPEM, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
+	cert, err := parseCACert(certPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := aopctl.ParsePrivateKeyPEM(keyPEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("AOP_CA_KEY: %w", err)
+	}
+	if pub, ok := key.Public().(interface{ Equal(crypto.PublicKey) bool }); !ok || !pub.Equal(cert.PublicKey) {
+		return nil, nil, errors.New("AOP_CA_KEY does not match the certificate in AOP_CA_CERT")
+	}
+	return cert, key, nil
+}
+
+// parseCACert parses AOP_CA_CERT.
+func parseCACert(certPEM string) (*x509.Certificate, error) {
+	cert, err := aopctl.ParseCACertificate(certPEM)
+	if errors.Is(err, aopctl.ErrNotCA) {
+		return nil, errors.New("AOP_CA_CERT is not a CA certificate")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("AOP_CA_CERT: %w", err)
+	}
+	return cert, nil
+}
+
+func describeKey(pub crypto.PublicKey) string {
+	switch k := pub.(type) {
+	case *ecdsa.PublicKey:
+		return "ECDSA " + k.Curve.Params().Name
+	case *rsa.PublicKey:
+		return fmt.Sprintf("RSA %d", k.N.BitLen())
+	case ed25519.PublicKey:
+		return "Ed25519"
+	}
+	return fmt.Sprintf("unknown (%T)", pub)
 }

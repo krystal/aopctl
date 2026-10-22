@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/krystal/aopctl/aopctl"
 )
 
 // vectorCA is a fixed CA certificate. vectorFingerprint is the output of
@@ -105,7 +107,7 @@ func TestCACreateOutput(t *testing.T) {
 	}
 
 	cert, _ := parseItemPair(t, stdout)
-	fp := fingerprint(cert)
+	fp := aopctl.Fingerprint(cert)
 	if fields["fingerprint_sha256"].Value != fp {
 		t.Errorf("fingerprint field %q, want %q", fields["fingerprint_sha256"].Value, fp)
 	}
@@ -165,11 +167,11 @@ func TestCAShow(t *testing.T) {
 		for line := range strings.SplitSeq(strings.TrimRight(body, "\n"), "\n") {
 			pemLines = append(pemLines, strings.TrimPrefix(line, "    "))
 		}
-		cert, err := parseCertPEM(strings.Join(pemLines, "\n"))
+		cert, err := aopctl.ParseCertificatePEM(strings.Join(pemLines, "\n"))
 		if err != nil {
 			t.Fatalf("manifest certificate: %v", err)
 		}
-		if fingerprint(cert) != vectorFingerprint {
+		if aopctl.Fingerprint(cert) != vectorFingerprint {
 			t.Error("manifest holds a different certificate")
 		}
 	})

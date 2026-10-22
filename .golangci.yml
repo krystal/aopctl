@@ -4,14 +4,36 @@ linters:
   default: standard
   enable:
     - errorlint
+    - forbidigo
     - gosec
     - misspell
     - nolintlint
     - revive
+  settings:
+    forbidigo:
+      # Match by package, so an aliased import cannot escape the patterns.
+      analyze-types: true
+      # The aopctl package reads no environment, writes nothing to stdio and
+      # never prompts; the command does that.
+      forbid:
+        - pattern: ^os\.(Getenv|LookupEnv|Environ|Setenv|Unsetenv|Clearenv|Stdin|Stdout|Stderr|Exit|Open|OpenFile|Create|NewFile)$
+          msg: the aopctl package must not use the environment, stdio, files or a terminal
+        - pattern: ^syscall\.(Getenv|Environ|Setenv|Unsetenv|Clearenv|Stdin|Stdout|Stderr|Exit|Open|Read|Write)$
+          msg: the aopctl package must not use the environment, stdio, files or a terminal
+        - pattern: ^(fmt\.Print(f|ln)?|print|println)$
+          msg: the aopctl package must not write to stdout
+        - pattern: ^log\.
+          msg: the aopctl package must not log
+        - pattern: ^slog\.(Debug|Info|Warn|Error|Log|LogAttrs)(Context)?$
+          msg: the aopctl package must not log
   exclusions:
     # Unchecked Close and fmt.Fprint* errors, mostly in test cleanup.
     presets:
       - std-error-handling
+    rules:
+      - path-except: ^aopctl/
+        linters:
+          - forbidigo
 
 formatters:
   enable:

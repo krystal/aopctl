@@ -1,4 +1,4 @@
-package main
+package aopctl
 
 import (
 	"context"
@@ -11,31 +11,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/krystal/aopctl/internal/cftest"
 )
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) *cfClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &cfClient{baseURL: srv.URL, token: testToken, zoneID: testZone, http: &http.Client{Timeout: requestTimeout}}
-}
-
-func writeRaw(w http.ResponseWriter, status int, contentType, body string) {
-	w.Header().Set("Content-Type", contentType)
-	w.WriteHeader(status)
-	_, _ = io.WriteString(w, body)
+	return &cfClient{baseURL: srv.URL, token: cftest.Token, zoneID: cftest.Zone, http: &http.Client{Timeout: requestTimeout}}
 }
 
 func TestClientSendsBearerToken(t *testing.T) {
 	var auth, agent string
 	cf := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		auth, agent = r.Header.Get("Authorization"), r.Header.Get("User-Agent")
-		writeEnvelope(w, http.StatusOK, []any{}, nil)
+		cftest.WriteEnvelope(w, http.StatusOK, []any{}, nil)
 	})
 	if _, err := cf.listCerts(context.Background()); err != nil {
 		t.Fatalf("listCerts: %v", err)
 	}
-	if auth != "Bearer "+testToken {
+	if auth != "Bearer "+cftest.Token {
 		t.Errorf("Authorization = %q", auth)
 	}
 	if agent != userAgent {
@@ -52,28 +48,28 @@ func TestClientErrors(t *testing.T) {
 		{
 			name: "non-2xx with success true",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusBadGateway, "application/json", `{"success":true,"errors":[],"messages":[],"result":[]}`)
+				cftest.WriteRaw(w, http.StatusBadGateway, "application/json", `{"success":true,"errors":[],"messages":[],"result":[]}`)
 			},
 			want: "HTTP 502",
 		},
 		{
 			name: "2xx with success false",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusOK, "application/json", `{"success":false,"errors":[{"code":1001,"message":"nope"}],"messages":[],"result":null}`)
+				cftest.WriteRaw(w, http.StatusOK, "application/json", `{"success":false,"errors":[{"code":1001,"message":"nope"}],"messages":[],"result":null}`)
 			},
 			want: "HTTP 200 (code 1001): request unsuccessful: nope",
 		},
 		{
 			name: "malformed JSON",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusOK, "application/json", `{"success":true,"result":[`)
+				cftest.WriteRaw(w, http.StatusOK, "application/json", `{"success":true,"result":[`)
 			},
 			want: `HTTP 200: undecodable response (content type "application/json")`,
 		},
 		{
 			name: "non-JSON body",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusBadGateway, "text/html", "<html>upstream secret page</html>")
+				cftest.WriteRaw(w, http.StatusBadGateway, "text/html", "<html>upstream secret page</html>")
 			},
 			want: `HTTP 502: undecodable response (content type "text/html")`,
 		},
@@ -110,19 +106,19 @@ func TestResponseClassification(t *testing.T) {
 	}{
 		{
 			name:      "connection reset",
-			handler:   func(w http.ResponseWriter, _ *http.Request) { resetConnection(t, w) },
+			handler:   func(w http.ResponseWriter, _ *http.Request) { cftest.ResetConnection(t, w) },
 			transient: true,
 		},
 		{
 			name:      "body cut off",
-			handler:   func(w http.ResponseWriter, _ *http.Request) { writeCutOff(t, w, http.StatusOK) },
+			handler:   func(w http.ResponseWriter, _ *http.Request) { cftest.WriteCutOff(t, w, http.StatusOK) },
 			want:      "HTTP 200: unexpected EOF",
 			transient: true,
 		},
 		{
 			name: "no success field",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusOK, "application/json", `{"result":{"id":"x"}}`)
+				cftest.WriteRaw(w, http.StatusOK, "application/json", `{"result":{"id":"x"}}`)
 			},
 			want: `HTTP 200: undecodable response (content type "application/json")`,
 		},
@@ -130,14 +126,14 @@ func TestResponseClassification(t *testing.T) {
 			name: "too large",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				body := `{"success":true,"errors":[],"messages":[],"result":{}}`
-				writeRaw(w, http.StatusOK, "application/json", body+strings.Repeat(" ", maxResponseBytes+1-len(body)))
+				cftest.WriteRaw(w, http.StatusOK, "application/json", body+strings.Repeat(" ", maxResponseBytes+1-len(body)))
 			},
 			want: `HTTP 200: response too large (content type "application/json")`,
 		},
 		{
 			name: "non-JSON 503",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusServiceUnavailable, "text/html", "<html>busy</html>")
+				cftest.WriteRaw(w, http.StatusServiceUnavailable, "text/html", "<html>busy</html>")
 			},
 			want:      "HTTP 503: undecodable response",
 			transient: true,
@@ -145,14 +141,14 @@ func TestResponseClassification(t *testing.T) {
 		{
 			name: "non-JSON 404",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
+				cftest.WriteRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
 			},
 			want: "HTTP 404: undecodable response",
 		},
 		{
 			name: "Cloudflare 404",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeAPIError(w, http.StatusNotFound, 1551, "certificate not found")
+				cftest.WriteAPIError(w, http.StatusNotFound, 1551, "certificate not found")
 			},
 			want:     "HTTP 404 (code 1551): certificate not found",
 			notFound: true,
@@ -165,7 +161,7 @@ func TestResponseClassification(t *testing.T) {
 			if err == nil {
 				t.Fatal("getCert succeeded, want an error")
 			}
-			if !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), testZone) {
+			if !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), cftest.Zone) {
 				t.Errorf("err = %q, want it to contain %q and not the zone ID", err, tt.want)
 			}
 			if got := isTransient(err); got != tt.transient {
@@ -182,11 +178,11 @@ func TestResponseClassification(t *testing.T) {
 // token and the zone ID back in the envelope's messages.
 func TestErrorsRedactSecrets(t *testing.T) {
 	ca := newTestCA(t, 3650)
-	leaf, key, err := createLeaf(ca.cert, ca.key, "leaf", keyTypeECP256, 30, time.Now())
+	leaf, key, err := createLeaf(ca.cert, ca.key, "leaf", KeyTypeECP256, 30, time.Now())
 	if err != nil {
 		t.Fatalf("createLeaf: %v", err)
 	}
-	keyPEM, err := encodeKeyPEM(key)
+	keyPEM, err := EncodePrivateKeyPEM(key)
 	if err != nil {
 		t.Fatalf("encodeKeyPEM: %v", err)
 	}
@@ -199,19 +195,19 @@ func TestErrorsRedactSecrets(t *testing.T) {
 		// A cut-off copy has no END line, and a bare copy has no PEM armor.
 		cut := string(body[:len(body)-60])
 		bare := strings.Join(strings.Split(keyPEM, "\n")[1:3], "")
-		writeEnvelope(w, http.StatusBadRequest, nil, map[string]any{
+		cftest.WriteEnvelope(w, http.StatusBadRequest, nil, map[string]any{
 			"success":  false,
 			"errors":   []any{map[string]any{"code": 1000, "message": echo}},
 			"messages": []any{cut, map[string]any{"code": 0, "message": "key " + bare + " zone" + zone + "token" + token}},
 		})
 	})
-	_, err = cf.uploadCert(context.Background(), encodeCertPEM(leaf), keyPEM)
+	_, err = cf.uploadCert(context.Background(), EncodeCertificatePEM(leaf), keyPEM)
 	if err == nil {
 		t.Fatal("uploadCert succeeded, want an error")
 	}
 	msg := err.Error()
 
-	for _, leak := range []string{testZone, "suffix7", "AAAA", "PRIVATE KEY", "BEGIN"} {
+	for _, leak := range []string{cftest.Zone, "suffix7", "AAAA", "PRIVATE KEY", "BEGIN"} {
 		if strings.Contains(msg, leak) {
 			t.Errorf("error contains %q: %s", leak, msg)
 		}
@@ -238,7 +234,7 @@ func TestErrorsRedactSecrets(t *testing.T) {
 
 func TestErrorsKeepBenignMessages(t *testing.T) {
 	cf := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
+		cftest.WriteAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
 	})
 	_, err := cf.uploadCert(context.Background(), "cert", "key")
 	if err == nil || !strings.Contains(err.Error(), "(code 1400): missing leaf certificate") {
@@ -251,44 +247,10 @@ func TestErrorsKeepBenignMessages(t *testing.T) {
 }
 
 func TestSanitizeOrder(t *testing.T) {
-	cf := &cfClient{token: testToken, zoneID: testZone}
-	got := cf.sanitize("Bearer " + testToken + "; zone " + testZone + "; ok")
+	cf := &cfClient{token: cftest.Token, zoneID: cftest.Zone}
+	got := cf.sanitize("Bearer " + cftest.Token + "; zone " + cftest.Zone + "; ok")
 	if want := "Bearer [redacted]; zone [redacted]; ok"; got != want {
 		t.Errorf("sanitize = %q, want %q", got, want)
-	}
-}
-
-func TestPagination(t *testing.T) {
-	h := newHarness(t)
-	h.fake.perPage = 3
-	for i := 1; i <= 10; i++ {
-		h.fake.addCert(fmt.Sprintf("cert-%02d", i), h.ca.issue(t))
-	}
-
-	code, stdout, stderr := h.run("leaf", "status")
-	if code != 0 {
-		t.Fatalf("status: exit %d; stderr:\n%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "Certificates (10 of 10)") || !strings.Contains(stdout, "cert-10") {
-		t.Errorf("status misses later pages:\n%s", stdout)
-	}
-
-	// cert-10 is alone on page 4, and it fills the last slot.
-	code, _, stderr = h.run("leaf", "issue", "--hostname", "app.example.com")
-	if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
-		t.Errorf("issue: exit %d; stderr:\n%s", code, stderr)
-	}
-	if n := h.fake.count(http.MethodPost, "/certificates"); n != 0 {
-		t.Errorf("sent %d uploads, want none", n)
-	}
-	var pages []string
-	for _, r := range h.fake.recorded() {
-		if r.method == http.MethodGet && strings.HasSuffix(r.path, "/certificates") {
-			pages = append(pages, r.query)
-		}
-	}
-	if got := strings.Join(pages, " "); got != "page=1 page=2 page=3 page=4 page=1 page=2 page=3 page=4" {
-		t.Errorf("list requests = %s", got)
 	}
 }
 
@@ -317,7 +279,7 @@ func TestStalledRequest(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want context.Canceled", err)
 		}
-		if strings.Contains(err.Error(), testZone) {
+		if strings.Contains(err.Error(), cftest.Zone) {
 			t.Errorf("err contains the zone ID: %v", err)
 		}
 	case <-time.After(10 * time.Second):
