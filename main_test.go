@@ -5,27 +5,20 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/krystal/aopctl/aopctl"
+	"github.com/krystal/aopctl/internal/cftest"
 )
-
-// testToken mixes base64 and other characters, so redacting only base64 runs
-// would leave "-suffix7" behind.
-var testToken = strings.Repeat("A", 32) + "-suffix7"
-
-const testZone = "023e105f4ecef8ad9ca31a8372d0c353"
 
 type testCA struct {
 	cert    *x509.Certificate
@@ -36,336 +29,28 @@ type testCA struct {
 
 func newTestCA(t *testing.T, days int) *testCA {
 	t.Helper()
-	cert, key, err := createCA("Test AOP CA", keyTypeECP256, days, time.Now())
+	cert, key, err := aopctl.CreateCA(aopctl.CARequest{CommonName: "Test AOP CA", KeyType: aopctl.KeyTypeECP256, Days: days})
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
-	keyPEM, err := encodeKeyPEM(key)
+	keyPEM, err := aopctl.EncodePrivateKeyPEM(key)
 	if err != nil {
 		t.Fatalf("encode CA key: %v", err)
 	}
-	return &testCA{cert: cert, key: key, certPEM: encodeCertPEM(cert), keyPEM: keyPEM}
+	return &testCA{cert: cert, key: key, certPEM: aopctl.EncodeCertificatePEM(cert), keyPEM: keyPEM}
 }
 
 // issue returns the PEM of a leaf signed by the CA.
 func (ca *testCA) issue(t *testing.T) string {
 	t.Helper()
-	leaf, _, err := createLeaf(ca.cert, ca.key, "existing leaf", keyTypeECP256, 30, time.Now())
-	if err != nil {
-		t.Fatalf("issue leaf: %v", err)
-	}
-	return encodeCertPEM(leaf)
-}
-
-// fakeCF is a stateful fake of Cloudflare's hostname AOP API.
-type fakeCF struct {
-	mu       sync.Mutex
-	certs    []*fakeCert
-	assocs   map[string]*fakeAssoc
-	requests []fakeRequest
-	uploads  int
-	perPage  int
-
-	// Statuses a certificate or association reports on successive GETs
-	// after an upload, delete or PUT. The last one repeats; "gone" makes a
-	// certificate disappear.
-	uploadStatuses []string
-	deleteStatuses []string
-	assocStatuses  []string
-
-	// hook runs with mu held before the default handling. Returning true
-	// means it wrote the response.
-	hook func(w http.ResponseWriter, r *http.Request, body []byte) bool
-}
-
-type fakeCert struct {
-	id       string
-	pem      string
-	statuses []string
-}
-
-type fakeAssoc struct {
-	certID   string
-	enabled  *bool
-	statuses []string
-}
-
-type fakeRequest struct {
-	method string
-	path   string
-	query  string
-	body   []byte
-}
-
-func newFakeCF(t *testing.T) (*fakeCF, *httptest.Server) {
-	t.Helper()
-	f := &fakeCF{
-		assocs:         map[string]*fakeAssoc{},
-		perPage:        50,
-		uploadStatuses: []string{"pending_deployment", statusActive},
-		deleteStatuses: []string{statusPendingDeletion, "gone"},
-		assocStatuses:  []string{"pending_deployment", statusActive},
-	}
-	srv := httptest.NewServer(f)
-	t.Cleanup(srv.Close)
-	return f, srv
-}
-
-// next returns the current status and advances to the next one.
-func next(statuses *[]string) string {
-	s := (*statuses)[0]
-	if len(*statuses) > 1 {
-		*statuses = (*statuses)[1:]
-	}
-	return s
-}
-
-func (f *fakeCF) addCert(id, pem string, statuses ...string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(statuses) == 0 {
-		statuses = []string{statusActive}
-	}
-	f.certs = append(f.certs, &fakeCert{id: id, pem: pem, statuses: statuses})
-}
-
-func (f *fakeCF) setAssoc(host, certID string, enabled *bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.assocs[host] = &fakeAssoc{certID: certID, enabled: enabled, statuses: []string{statusActive}}
-}
-
-func (f *fakeCF) assocCertID(host string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if a := f.assocs[host]; a != nil {
-		return a.certID
-	}
-	return ""
-}
-
-func (f *fakeCF) findCert(id string) (int, *fakeCert) {
-	for i, c := range f.certs {
-		if c.id == id {
-			return i, c
-		}
-	}
-	return -1, nil
-}
-
-func (f *fakeCF) recorded() []fakeRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]fakeRequest(nil), f.requests...)
-}
-
-// count returns how many requests used method on a path ending in suffix.
-func (f *fakeCF) count(method, suffix string) int {
-	n := 0
-	for _, r := range f.recorded() {
-		if r.method == method && strings.HasSuffix(r.path, suffix) {
-			n++
-		}
-	}
-	return n
-}
-
-func (f *fakeCF) writes() []fakeRequest {
-	var writes []fakeRequest
-	for _, r := range f.recorded() {
-		if r.method != http.MethodGet {
-			writes = append(writes, r)
-		}
-	}
-	return writes
-}
-
-func writeEnvelope(w http.ResponseWriter, status int, result any, extra map[string]any) {
-	env := map[string]any{"success": status < 300, "errors": []any{}, "messages": []any{}, "result": result}
-	maps.Copy(env, extra)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(env)
-}
-
-func writeAPIError(w http.ResponseWriter, status, code int, msg string) {
-	writeEnvelope(w, status, nil, map[string]any{
-		"success": false,
-		"errors":  []any{map[string]any{"code": code, "message": msg}},
-	})
-}
-
-// writeCutOff sends the headers and the start of a JSON body, then closes
-// the connection, so reading the body fails with io.ErrUnexpectedEOF.
-func writeCutOff(t *testing.T, w http.ResponseWriter, status int) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", "1000")
-	w.WriteHeader(status)
-	_, _ = io.WriteString(w, `{"success":true,"result":{"id":"`)
-	w.(http.Flusher).Flush()
-	conn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		t.Errorf("hijack: %v", err)
-		return
-	}
-	_ = conn.Close()
-}
-
-// resetConnection resets the connection before any response is sent.
-func resetConnection(t *testing.T, w http.ResponseWriter) {
-	t.Helper()
-	conn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		t.Errorf("hijack: %v", err)
-		return
-	}
-	_ = conn.(*net.TCPConn).SetLinger(0)
-	_ = conn.Close()
-}
-
-// stall holds a request until the client gives up on it, so the command's
-// budget runs out while the request is in flight.
-func stall(r *http.Request) {
-	<-r.Context().Done()
-}
-
-func certJSON(c *fakeCert, status string) map[string]any {
-	return map[string]any{
-		"id": c.id, "certificate": c.pem, "status": status,
-		"expires_on": "2030-01-01T00:00:00Z", "signature": "ECDSAWithSHA256",
-	}
-}
-
-func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.requests = append(f.requests, fakeRequest{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: body})
-
-	if r.Header.Get("Authorization") != "Bearer "+testToken {
-		writeAPIError(w, http.StatusForbidden, 10000, "Authentication error")
-		return
-	}
-	rest, ok := strings.CutPrefix(r.URL.Path, "/zones/"+testZone+"/origin_tls_client_auth/hostnames")
-	if !ok {
-		writeAPIError(w, http.StatusNotFound, 7003, "Could not route")
-		return
-	}
-	if f.hook != nil && f.hook(w, r, body) {
-		return
-	}
-
-	switch {
-	case rest == "" && r.Method == http.MethodPut:
-		f.putAssociations(w, body)
-	case rest == "/certificates" && r.Method == http.MethodGet:
-		f.list(w, r)
-	case rest == "/certificates" && r.Method == http.MethodPost:
-		f.upload(w, body)
-	case strings.HasPrefix(rest, "/certificates/"):
-		f.cert(w, r.Method, strings.TrimPrefix(rest, "/certificates/"))
-	case strings.HasPrefix(rest, "/") && r.Method == http.MethodGet:
-		f.association(w, strings.TrimPrefix(rest, "/"))
-	default:
-		writeAPIError(w, http.StatusMethodNotAllowed, 10405, "Method not allowed")
-	}
-}
-
-func (f *fakeCF) list(w http.ResponseWriter, r *http.Request) {
-	page, err := strconv.Atoi(r.URL.Query().Get("page"))
-	if err != nil || page < 1 {
-		page = 1
-	}
-	totalPages := (len(f.certs) + f.perPage - 1) / f.perPage
-	result := []any{}
-	for i := (page - 1) * f.perPage; i < len(f.certs) && i < page*f.perPage; i++ {
-		result = append(result, certJSON(f.certs[i], f.certs[i].statuses[0]))
-	}
-	writeEnvelope(w, http.StatusOK, result, map[string]any{"result_info": map[string]any{
-		"page": page, "per_page": f.perPage, "total_pages": totalPages, "count": len(result), "total_count": len(f.certs),
-	}})
-}
-
-func (f *fakeCF) upload(w http.ResponseWriter, body []byte) {
-	var req struct {
-		Certificate string `json:"certificate"`
-		PrivateKey  string `json:"private_key"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil || req.Certificate == "" || req.PrivateKey == "" {
-		writeAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
-		return
-	}
-	f.uploads++
-	c := &fakeCert{
-		id:       fmt.Sprintf("new-%d", f.uploads),
-		pem:      req.Certificate,
-		statuses: append([]string(nil), f.uploadStatuses...),
-	}
-	f.certs = append(f.certs, c)
-	writeEnvelope(w, http.StatusOK, certJSON(c, "initializing"), nil)
-}
-
-func (f *fakeCF) cert(w http.ResponseWriter, method, id string) {
-	i, c := f.findCert(id)
-	if c == nil {
-		writeAPIError(w, http.StatusNotFound, 1551, "certificate not found")
-		return
-	}
-	switch method {
-	case http.MethodGet:
-		status := next(&c.statuses)
-		if status == "gone" {
-			f.certs = append(f.certs[:i], f.certs[i+1:]...)
-			writeAPIError(w, http.StatusNotFound, 1551, "certificate not found")
-			return
-		}
-		writeEnvelope(w, http.StatusOK, certJSON(c, status), nil)
-	case http.MethodDelete:
-		c.statuses = append([]string(nil), f.deleteStatuses...)
-		writeEnvelope(w, http.StatusOK, map[string]any{"id": id}, nil)
-	default:
-		writeAPIError(w, http.StatusMethodNotAllowed, 10405, "Method not allowed")
-	}
-}
-
-func (f *fakeCF) association(w http.ResponseWriter, host string) {
-	a := f.assocs[host]
-	if a == nil {
-		writeAPIError(w, http.StatusNotFound, codeNoAssociation, "Auth origin pull setting for this hostname not found.")
-		return
-	}
-	writeEnvelope(w, http.StatusOK, map[string]any{
-		"hostname": host, "cert_id": a.certID, "enabled": a.enabled, "status": next(&a.statuses),
-	}, nil)
-}
-
-// applyAssociation sets one hostname's association, as a PUT does.
-func (f *fakeCF) applyAssociation(host, certID string, enabled *bool) {
-	f.assocs[host] = &fakeAssoc{certID: certID, enabled: enabled, statuses: append([]string(nil), f.assocStatuses...)}
-}
-
-func (f *fakeCF) putAssociations(w http.ResponseWriter, body []byte) {
-	var req struct {
-		Config []associationConfig `json:"config"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, 1400, "invalid request")
-		return
-	}
-	result := []any{}
-	for _, c := range req.Config {
-		f.applyAssociation(c.Hostname, c.CertID, c.Enabled)
-		result = append(result, map[string]any{"hostname": c.Hostname, "cert_id": c.CertID, "enabled": c.Enabled, "status": "pending_deployment"})
-	}
-	writeEnvelope(w, http.StatusOK, result, nil)
+	return cftest.IssueLeaf(t, ca.cert, ca.key)
 }
 
 // harness runs the CLI against a fake Cloudflare with injected terminals,
 // clock and waits.
 type harness struct {
 	t    *testing.T
-	fake *fakeCF
+	fake *cftest.Fake
 	srv  *httptest.Server
 	ca   *testCA
 	env  map[string]string
@@ -387,7 +72,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	fake, srv := newFakeCF(t)
+	fake, srv := cftest.New(t)
 	ca := newTestCA(t, 3650)
 	return &harness{
 		t:    t,
@@ -395,8 +80,8 @@ func newHarness(t *testing.T) *harness {
 		srv:  srv,
 		ca:   ca,
 		env: map[string]string{
-			"CLOUDFLARE_API_TOKEN": testToken,
-			"CLOUDFLARE_ZONE_ID":   testZone,
+			"CLOUDFLARE_API_TOKEN": cftest.Token,
+			"CLOUDFLARE_ZONE_ID":   cftest.Zone,
 			"AOP_CA_CERT":          ca.certPEM,
 			"AOP_CA_KEY":           ca.keyPEM,
 		},
@@ -418,7 +103,6 @@ func (h *harness) run(args ...string) (code int, stdout, stderr string) {
 		stdinIsTerminal:  func() bool { return h.stdinTTY },
 		openTTY:          h.openTTY,
 		baseURL:          h.srv.URL,
-		httpClient:       &http.Client{Timeout: requestTimeout},
 		wait: func(ctx context.Context, _ time.Duration) error {
 			h.waits++
 			if h.blockWaits {
@@ -553,7 +237,7 @@ func TestUsageErrors(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if n := len(h.fake.recorded()); n != 0 {
+			if n := len(h.fake.Recorded()); n != 0 {
 				t.Errorf("sent %d requests, want none", n)
 			}
 		})
@@ -571,7 +255,7 @@ func TestHundredHostnamesAccepted(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
-	if n := h.fake.count(http.MethodGet, "/hostnames/h99.example.com"); n != 1 {
+	if n := h.fake.Count(http.MethodGet, "/hostnames/h99.example.com"); n != 1 {
 		t.Errorf("read the 100th hostname %d times, want 1", n)
 	}
 }

@@ -298,6 +298,31 @@ describes. With `aopctl`:
 
 If the CA key leaks, [rotate the CA][plugin-rotate-ca].
 
+## Use as a Go library
+
+The `aopctl` command is a thin wrapper around the
+`github.com/krystal/aopctl/aopctl` package, which other tools can embed. It has
+the same workflows and safety checks, but reads no environment variables,
+prints nothing and never prompts:
+
+```go
+client, err := aopctl.NewClient(apiToken, zoneID, aopctl.Options{})
+// handle err
+plan, err := client.PlanHostnameIssue(ctx, aopctl.HostnameIssueRequest{
+	CACert: caCert, CAKey: caKey,
+	CommonName: "my AOP client", KeyType: aopctl.KeyTypeECP256, Days: 365,
+	Hostnames: []string{"app.example.com"},
+})
+// handle err, then show the plan or ask for confirmation
+result, err := plan.Apply(ctx)
+```
+
+Each workflow that changes Cloudflare has a `Plan` method that only reads, and
+an `Apply` that runs once. A request's `Progress` callback receives events
+during `Apply`, and errors such as `*aopctl.UploadUnknownError` and
+`*aopctl.HostnameRolloutError` carry what you need to resume or roll back. See
+the [package documentation](https://pkg.go.dev/github.com/krystal/aopctl/aopctl).
+
 ## Development
 
 Tools and tasks are managed with [mise](https://mise.jdx.dev). To work on

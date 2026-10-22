@@ -1,12 +1,13 @@
 package main
 
 import (
-	"crypto/rsa"
 	"crypto/x509"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/krystal/aopctl/aopctl"
 )
 
 func TestCAProfile(t *testing.T) {
@@ -14,8 +15,8 @@ func TestCAProfile(t *testing.T) {
 		keyType string
 		key     string
 	}{
-		{keyTypeECP256, "ECDSA P-256"},
-		{keyTypeRSA3072, "RSA 3072"},
+		{string(aopctl.KeyTypeECP256), "ECDSA P-256"},
+		{string(aopctl.KeyTypeRSA3072), "RSA 3072"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.keyType, func(t *testing.T) {
@@ -57,54 +58,10 @@ func TestCAProfile(t *testing.T) {
 			if got := describeKey(key.Public()); got != tt.key {
 				t.Errorf("key = %s, want %s", got, tt.key)
 			}
-			if warnings := caProfileWarnings(cert); len(warnings) != 0 {
+			if warnings := aopctl.CAProfileWarnings(cert); len(warnings) != 0 {
 				t.Errorf("profile warnings: %v", warnings)
 			}
 		})
-	}
-}
-
-func TestLeafProfileAndChain(t *testing.T) {
-	ca := newTestCA(t, 3650)
-	now := time.Now()
-	leaf, key, err := createLeaf(ca.cert, ca.key, "aopctl AOP client", keyTypeECP256, 365, now)
-	if err != nil {
-		t.Fatalf("createLeaf: %v", err)
-	}
-	if !leaf.BasicConstraintsValid || leaf.IsCA {
-		t.Error("leaf is not CA:FALSE")
-	}
-	if leaf.KeyUsage != x509.KeyUsageDigitalSignature {
-		t.Errorf("KeyUsage = %b, want DigitalSignature", leaf.KeyUsage)
-	}
-	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth || len(leaf.UnknownExtKeyUsage) != 0 {
-		t.Errorf("EKU = %v %v, want [ClientAuth]", leaf.ExtKeyUsage, leaf.UnknownExtKeyUsage)
-	}
-	if len(leaf.DNSNames)+len(leaf.IPAddresses)+len(leaf.URIs)+len(leaf.EmailAddresses) != 0 {
-		t.Error("leaf has a SAN")
-	}
-	if !keyMatchesCert(leaf, key) {
-		t.Error("leaf key does not match the leaf")
-	}
-	if err := verifyLeaf(leaf, ca.cert, now); err != nil {
-		t.Errorf("client auth verify: %v", err)
-	}
-	roots := x509.NewCertPool()
-	roots.AddCert(ca.cert)
-	_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
-	if err == nil {
-		t.Error("server auth verify passed, want failure")
-	}
-
-	rsaLeaf, rsaKey, err := createLeaf(ca.cert, ca.key, "rsa", keyTypeRSA3072, 30, now)
-	if err != nil {
-		t.Fatalf("createLeaf rsa: %v", err)
-	}
-	if k, ok := rsaKey.(*rsa.PrivateKey); !ok || k.N.BitLen() != 3072 {
-		t.Errorf("rsa leaf key = %s", describeKey(rsaKey.Public()))
-	}
-	if err := verifyLeaf(rsaLeaf, ca.cert, now); err != nil {
-		t.Errorf("rsa leaf verify: %v", err)
 	}
 }
 
@@ -119,7 +76,7 @@ func TestCAShorterThanLeaf(t *testing.T) {
 	if !strings.Contains(stderr, "the CA expires") {
 		t.Errorf("stderr does not explain the CA expiry:\n%s", stderr)
 	}
-	if n := len(h.fake.recorded()); n != 0 {
+	if n := len(h.fake.Recorded()); n != 0 {
 		t.Errorf("sent %d requests, want none", n)
 	}
 }
@@ -136,7 +93,7 @@ func TestKeyCertMismatch(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "AOP_CA_KEY does not match") {
 		t.Errorf("exit %d, stderr:\n%s", code, stderr)
 	}
-	if n := len(h.fake.recorded()); n != 0 {
+	if n := len(h.fake.Recorded()); n != 0 {
 		t.Errorf("sent %d requests, want none", n)
 	}
 }
@@ -160,7 +117,7 @@ func TestPEMWhitespace(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
-	if n := h.fake.count(http.MethodGet, "/hostnames/app.example.com"); n != 1 {
+	if n := h.fake.Count(http.MethodGet, "/hostnames/app.example.com"); n != 1 {
 		t.Errorf("did not reach the preflight reads")
 	}
 }

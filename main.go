@@ -11,11 +11,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/krystal/aopctl/aopctl"
 )
 
 const usageText = `Usage: aopctl <command> [flags]
@@ -54,10 +55,11 @@ type app struct {
 	// works under op run whatever stdin and stdout are.
 	openTTY func() (io.ReadWriteCloser, error)
 
-	baseURL    string
-	httpClient *http.Client
-	wait       func(ctx context.Context, d time.Duration) error
-	now        func() time.Time
+	// baseURL, now and wait are the library's test seams. Empty and nil
+	// values mean its defaults.
+	baseURL string
+	wait    func(ctx context.Context, d time.Duration) error
+	now     func() time.Time
 
 	version string
 }
@@ -77,11 +79,8 @@ func newApp() *app {
 		openTTY: func() (io.ReadWriteCloser, error) {
 			return os.OpenFile("/dev/tty", os.O_RDWR, 0)
 		},
-		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{Timeout: requestTimeout},
-		wait:       sleep,
-		now:        time.Now,
-		version:    resolveVersion(version, debug.ReadBuildInfo),
+		now:     time.Now,
+		version: resolveVersion(version, debug.ReadBuildInfo),
 	}
 }
 
@@ -100,17 +99,6 @@ func resolveVersion(buildVersion string, readBuildInfo func() (*debug.BuildInfo,
 func isTerminal(f *os.File) bool {
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // usageError exits with status 2. An empty message means the usage was
@@ -219,6 +207,13 @@ func (l *stringList) Set(v string) error {
 	return nil
 }
 
+func validateKeyType(keyType string) error {
+	if k := aopctl.KeyType(keyType); k != aopctl.KeyTypeECP256 && k != aopctl.KeyTypeRSA3072 {
+		return usagef("invalid --key-type %q: want %s or %s", keyType, aopctl.KeyTypeECP256, aopctl.KeyTypeRSA3072)
+	}
+	return nil
+}
+
 func validateDays(days int) error {
 	if days <= 0 {
 		return usagef("--days must be positive, got %d", days)
@@ -241,7 +236,7 @@ func (a *app) requireEnv(name string) (string, error) {
 	return v, nil
 }
 
-func (a *app) cloudflare() (*cfClient, error) {
+func (a *app) client() (*aopctl.Client, error) {
 	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
 	if err != nil {
 		return nil, err
@@ -250,5 +245,5 @@ func (a *app) cloudflare() (*cfClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &cfClient{baseURL: a.baseURL, token: token, zoneID: zoneID, http: a.httpClient}, nil
+	return aopctl.NewClient(token, zoneID, aopctl.Options{BaseURL: a.baseURL, Now: a.now, Wait: a.wait})
 }

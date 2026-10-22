@@ -1,9 +1,8 @@
-package main
+package aopctl
 
 import (
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,27 +17,24 @@ import (
 	"time"
 )
 
+// KeyType names the algorithm and size of a new key.
+type KeyType string
+
+// The key types aopctl generates.
 const (
-	keyTypeECP256  = "ec-p256"
-	keyTypeRSA3072 = "rsa-3072"
+	KeyTypeECP256  KeyType = "ec-p256"
+	KeyTypeRSA3072 KeyType = "rsa-3072"
 )
 
-func validateKeyType(keyType string) error {
-	if keyType != keyTypeECP256 && keyType != keyTypeRSA3072 {
-		return usagef("invalid --key-type %q: want %s or %s", keyType, keyTypeECP256, keyTypeRSA3072)
-	}
-	return nil
-}
-
-func generateKey(keyType string) (crypto.Signer, error) {
+func generateKey(keyType KeyType) (crypto.Signer, error) {
 	switch keyType {
-	case keyTypeECP256:
+	case KeyTypeECP256:
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			return nil, err
 		}
 		return key, nil
-	case keyTypeRSA3072:
+	case KeyTypeRSA3072:
 		key, err := rsa.GenerateKey(rand.Reader, 3072)
 		if err != nil {
 			return nil, err
@@ -46,6 +42,13 @@ func generateKey(keyType string) (crypto.Signer, error) {
 		return key, nil
 	}
 	return nil, fmt.Errorf("unknown key type %q", keyType)
+}
+
+func validateDays(days int) error {
+	if days <= 0 {
+		return fmt.Errorf("days must be positive, got %d", days)
+	}
+	return nil
 }
 
 // newSerial returns a random, positive 128-bit serial number.
@@ -62,8 +65,29 @@ func newSerial() (*big.Int, error) {
 	}
 }
 
-// createCA creates a self-signed, single-tier CA that may only sign leaves.
-func createCA(cn, keyType string, days int, now time.Time) (*x509.Certificate, crypto.Signer, error) {
+// CARequest describes a new CA.
+type CARequest struct {
+	CommonName string
+	KeyType    KeyType
+	// Days is the validity in days, counted from an hour before Now.
+	Days int
+	// Now is the creation time. The zero value means time.Now().
+	Now time.Time
+}
+
+// CreateCA creates a self-signed, single-tier CA that may only sign leaves.
+func CreateCA(req CARequest) (*x509.Certificate, crypto.Signer, error) {
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return createCA(req.CommonName, req.KeyType, req.Days, now)
+}
+
+func createCA(cn string, keyType KeyType, days int, now time.Time) (*x509.Certificate, crypto.Signer, error) {
+	if err := validateDays(days); err != nil {
+		return nil, nil, err
+	}
 	key, err := generateKey(keyType)
 	if err != nil {
 		return nil, nil, err
@@ -95,12 +119,14 @@ func createCA(cn, keyType string, days int, now time.Time) (*x509.Certificate, c
 
 // createLeaf issues an AOP client certificate. It fails before generating
 // anything when the CA would expire before the leaf.
-func createLeaf(ca *x509.Certificate, caKey crypto.Signer, cn, keyType string, days int, now time.Time) (*x509.Certificate, crypto.Signer, error) {
+func createLeaf(ca *x509.Certificate, caKey crypto.Signer, cn string, keyType KeyType, days int, now time.Time) (*x509.Certificate, crypto.Signer, error) {
+	if err := validateDays(days); err != nil {
+		return nil, nil, err
+	}
 	notBefore := now.UTC().Add(-time.Hour)
 	notAfter := notBefore.AddDate(0, 0, days)
 	if notAfter.After(ca.NotAfter) {
-		return nil, nil, fmt.Errorf("the CA expires %s, before the new leaf would (%s): use a smaller --days or rotate the CA",
-			ca.NotAfter.UTC().Format(time.RFC3339), notAfter.Format(time.RFC3339))
+		return nil, nil, &CAExpiryError{CANotAfter: ca.NotAfter, LeafNotAfter: notAfter}
 	}
 	key, err := generateKey(keyType)
 	if err != nil {
@@ -147,13 +173,14 @@ func verifyLeaf(leaf, ca *x509.Certificate, now time.Time) error {
 	return err
 }
 
-func encodeCertPEM(cert *x509.Certificate) string {
+// EncodeCertificatePEM encodes the certificate as a CERTIFICATE PEM block.
+func EncodeCertificatePEM(cert *x509.Certificate) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
 }
 
-// encodeKeyPEM encodes the key as PKCS#8, which Cloudflare accepts for both
-// key types.
-func encodeKeyPEM(key crypto.Signer) (string, error) {
+// EncodePrivateKeyPEM encodes the key as a PKCS#8 PRIVATE KEY PEM block,
+// which Cloudflare accepts for both key types.
+func EncodePrivateKeyPEM(key crypto.Signer) (string, error) {
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return "", fmt.Errorf("encode private key: %w", err)
@@ -174,7 +201,9 @@ func decodePEM(data, blockType string) ([]byte, error) {
 	return block.Bytes, nil
 }
 
-func parseCertPEM(data string) (*x509.Certificate, error) {
+// ParseCertificatePEM parses the first PEM block, which must be a
+// certificate. Surrounding whitespace is ignored.
+func ParseCertificatePEM(data string) (*x509.Certificate, error) {
 	der, err := decodePEM(data, "CERTIFICATE")
 	if err != nil {
 		return nil, err
@@ -186,7 +215,32 @@ func parseCertPEM(data string) (*x509.Certificate, error) {
 	return cert, nil
 }
 
-func parseKeyPEM(data string) (crypto.Signer, error) {
+// ParseCACertificate parses a certificate with ParseCertificatePEM and
+// returns ErrNotCA unless it is a CA certificate.
+func ParseCACertificate(data string) (*x509.Certificate, error) {
+	cert, err := ParseCertificatePEM(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkCA(cert); err != nil {
+		return nil, err
+	}
+	return cert, nil
+}
+
+func checkCA(cert *x509.Certificate) error {
+	if cert == nil {
+		return errors.New("no CA certificate")
+	}
+	if !cert.BasicConstraintsValid || !cert.IsCA {
+		return ErrNotCA
+	}
+	return nil
+}
+
+// ParsePrivateKeyPEM parses the first PEM block, which must be a PKCS#8
+// private key. Errors never include the input.
+func ParsePrivateKeyPEM(data string) (crypto.Signer, error) {
 	der, err := decodePEM(data, "PRIVATE KEY")
 	if err != nil {
 		return nil, fmt.Errorf("%w (want PKCS#8)", err)
@@ -207,36 +261,9 @@ func keyMatchesCert(cert *x509.Certificate, key crypto.Signer) bool {
 	return ok && pub.Equal(cert.PublicKey)
 }
 
-// loadCA parses the CA pair and checks that it can sign leaves.
-func loadCA(certPEM, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
-	cert, err := parseCACert(certPEM)
-	if err != nil {
-		return nil, nil, err
-	}
-	key, err := parseKeyPEM(keyPEM)
-	if err != nil {
-		return nil, nil, fmt.Errorf("AOP_CA_KEY: %w", err)
-	}
-	if !keyMatchesCert(cert, key) {
-		return nil, nil, errors.New("AOP_CA_KEY does not match the certificate in AOP_CA_CERT")
-	}
-	return cert, key, nil
-}
-
-func parseCACert(certPEM string) (*x509.Certificate, error) {
-	cert, err := parseCertPEM(certPEM)
-	if err != nil {
-		return nil, fmt.Errorf("AOP_CA_CERT: %w", err)
-	}
-	if !cert.BasicConstraintsValid || !cert.IsCA {
-		return nil, errors.New("AOP_CA_CERT is not a CA certificate")
-	}
-	return cert, nil
-}
-
-// fingerprint formats the SHA-256 digest of the DER encoding as uppercase,
+// Fingerprint formats the SHA-256 digest of the DER encoding as uppercase,
 // colon-separated hex, as openssl x509 -fingerprint -sha256 does.
-func fingerprint(cert *x509.Certificate) string {
+func Fingerprint(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.Raw)
 	parts := make([]string, len(sum))
 	for i, b := range sum {
@@ -245,21 +272,9 @@ func fingerprint(cert *x509.Certificate) string {
 	return strings.Join(parts, ":")
 }
 
-func describeKey(pub crypto.PublicKey) string {
-	switch k := pub.(type) {
-	case *ecdsa.PublicKey:
-		return "ECDSA " + k.Curve.Params().Name
-	case *rsa.PublicKey:
-		return fmt.Sprintf("RSA %d", k.N.BitLen())
-	case ed25519.PublicKey:
-		return "Ed25519"
-	}
-	return fmt.Sprintf("unknown (%T)", pub)
-}
-
-// caProfileWarnings lists the ways a certificate differs from the AOP CA
+// CAProfileWarnings lists the ways a certificate differs from the AOP CA
 // profile: a CA with pathlen 0, certificate signing, and no EKU.
-func caProfileWarnings(cert *x509.Certificate) []string {
+func CAProfileWarnings(cert *x509.Certificate) []string {
 	var warnings []string
 	if !cert.BasicConstraintsValid || !cert.IsCA {
 		warnings = append(warnings, "not a CA certificate")

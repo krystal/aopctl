@@ -1,4 +1,4 @@
-package main
+package aopctl
 
 import (
 	"bytes"
@@ -13,14 +13,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
 const (
-	defaultBaseURL = "https://api.cloudflare.com/client/v4"
-	userAgent      = "aopctl"
-	requestTimeout = 30 * time.Second
+	userAgent = "aopctl"
 
 	hostnamesPath = "/zones/{zone}/origin_tls_client_auth/hostnames"
 	certsPath     = hostnamesPath + "/certificates"
@@ -50,25 +47,43 @@ type cfClient struct {
 	http    *http.Client
 }
 
-type cfCert struct {
-	ID          string `json:"id"`
-	Certificate string `json:"certificate"`
-	ExpiresOn   string `json:"expires_on"`
-	Status      string `json:"status"`
+// Certificate is a certificate uploaded to Cloudflare for AOP.
+type Certificate struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// ExpiresOn is Cloudflare's expires_on field, as Cloudflare sent it.
+	ExpiresOn string `json:"expires_on"`
+	// PEM is the certificate, without its key.
+	PEM string `json:"certificate"`
 }
 
-// association is a hostname's AOP setting. Enabled is nil when the
-// association was voided.
-type association struct {
+// Association is a hostname's AOP setting.
+type Association struct {
 	Hostname string `json:"hostname"`
 	CertID   string `json:"cert_id"`
-	Enabled  *bool  `json:"enabled"`
-	Status   string `json:"status"`
+	// Enabled is nil when the association was voided.
+	Enabled *bool  `json:"enabled"`
+	Status  string `json:"status"`
+}
+
+// String describes the association, or returns "none" for a nil one.
+func (a *Association) String() string {
+	if a == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s (enabled=%s, status=%s)", a.CertID, formatEnabled(a.Enabled), a.Status)
+}
+
+func formatEnabled(enabled *bool) string {
+	if enabled == nil {
+		return "null"
+	}
+	return fmt.Sprint(*enabled)
 }
 
 // validate rejects a result without a cert_id, such as null or {}, so a
 // drifted response cannot pass for "no association".
-func (a *association) validate() error {
+func (a *Association) validate() error {
 	if a.CertID == "" {
 		return errors.New("association result has no cert_id")
 	}
@@ -297,10 +312,10 @@ func (c *cfClient) do(ctx context.Context, method, path string, query url.Values
 }
 
 // listCerts returns every hostname certificate in the zone, across all pages.
-func (c *cfClient) listCerts(ctx context.Context) ([]cfCert, error) {
-	var all []cfCert
+func (c *cfClient) listCerts(ctx context.Context) ([]Certificate, error) {
+	var all []Certificate
 	for page := 1; ; page++ {
-		var certs []cfCert
+		var certs []Certificate
 		totalPages, err := c.do(ctx, http.MethodGet, certsPath, url.Values{"page": {strconv.Itoa(page)}}, nil, &certs)
 		if err != nil {
 			return nil, err
@@ -315,8 +330,8 @@ func (c *cfClient) listCerts(ctx context.Context) ([]cfCert, error) {
 	}
 }
 
-func (c *cfClient) getCert(ctx context.Context, id string) (*cfCert, error) {
-	var cert cfCert
+func (c *cfClient) getCert(ctx context.Context, id string) (*Certificate, error) {
+	var cert Certificate
 	if _, err := c.do(ctx, http.MethodGet, certsPath+"/"+url.PathEscape(id), nil, nil, &cert); err != nil {
 		return nil, err
 	}
@@ -342,8 +357,8 @@ func (c *cfClient) deleteCert(ctx context.Context, id string) error {
 }
 
 // getAssociation returns nil when the hostname has no association.
-func (c *cfClient) getAssociation(ctx context.Context, hostname string) (*association, error) {
-	var assoc association
+func (c *cfClient) getAssociation(ctx context.Context, hostname string) (*Association, error) {
+	var assoc Association
 	_, err := c.do(ctx, http.MethodGet, hostnamesPath+"/"+url.PathEscape(hostname), nil, nil, &assoc)
 	var apiErr *apiError
 	if errors.As(err, &apiErr) && apiErr.status == http.StatusNotFound && apiErr.hasCode(codeNoAssociation) {
