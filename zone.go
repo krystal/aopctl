@@ -272,7 +272,11 @@ func (a *app) zoneEnable(args []string) error {
 		}
 	}
 
-	if err := plan.Apply(ctx); err != nil {
+	err = plan.Apply(ctx)
+	if _, ok := errors.AsType[*aopctl.EnableUnknownError](err); ok {
+		return fmt.Errorf("%w: check it with aopctl zone status before retrying", err)
+	}
+	if err != nil {
 		return cliError(err)
 	}
 	fmt.Fprintf(a.stdout, "Zone-level AOP is enabled, and Cloudflare presents certificate %s.\n%s\n", newest.ID, zoneDisableHint)

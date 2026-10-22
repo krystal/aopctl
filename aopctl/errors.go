@@ -71,15 +71,35 @@ func (e *UploadUnknownError) Error() string {
 
 func (e *UploadUnknownError) Unwrap() error { return e.Err }
 
-// uploadError classifies a failed upload. Only a Cloudflare 4xx shows that
-// no certificate was created. A 5xx, a 2xx or a response that could not be
-// read may follow a create.
+// mayHaveApplied reports whether a failed write may still have taken
+// effect. Only a Cloudflare 4xx shows that it did not. A 5xx, a 2xx or a
+// response that could not be read may follow the change.
+func mayHaveApplied(err error) bool {
+	apiErr, ok := errors.AsType[*apiError](err)
+	return ok && (!apiErr.decoded || apiErr.status < 400 || apiErr.status > 499)
+}
+
+// uploadError classifies a failed upload.
 func uploadError(err error) error {
-	if apiErr, ok := errors.AsType[*apiError](err); ok && (!apiErr.decoded || apiErr.status < 400 || apiErr.status > 499) {
+	if mayHaveApplied(err) {
 		return &UploadUnknownError{Err: err}
 	}
 	return fmt.Errorf("upload failed: %w", err)
 }
+
+// EnableUnknownError reports a request to enable zone-level AOP that may
+// have taken effect: the response was a 5xx, an unsuccessful 2xx or
+// unreadable, or the setting could not be read back after the request.
+// Check the setting before retrying.
+type EnableUnknownError struct {
+	Err error
+}
+
+func (e *EnableUnknownError) Error() string {
+	return fmt.Sprintf("zone-level AOP may now be enabled: %v", e.Err)
+}
+
+func (e *EnableUnknownError) Unwrap() error { return e.Err }
 
 // HostnameRolloutError reports a new certificate that was uploaded but not
 // rolled out to every hostname, with the state needed to resume or roll

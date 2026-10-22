@@ -70,7 +70,9 @@ func (p *ZoneEnablePlan) Zone() *ZoneStatusReport {
 // Apply enables zone-level AOP, unless it was enabled when planned, and
 // reads the setting back. Just before the change, it reads the zone again
 // and fails unless the certificate Cloudflare would use is still the
-// planned one. Without a deadline on ctx, the reads have no time limit.
+// planned one. A request that may have enabled zone-level AOP without
+// confirming it fails with *EnableUnknownError. Without a deadline on ctx,
+// the reads have no time limit.
 func (p *ZoneEnablePlan) Apply(ctx context.Context) error {
 	if !p.applied.CompareAndSwap(false, true) {
 		return ErrPlanApplied
@@ -84,7 +86,8 @@ func (p *ZoneEnablePlan) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !zone.Enabled {
+	sent := !zone.Enabled
+	if sent {
 		target, err := enableTarget(zone, p.ca)
 		if err != nil {
 			return err
@@ -93,12 +96,20 @@ func (p *ZoneEnablePlan) Apply(ctx context.Context) error {
 			return fmt.Errorf("the newest active zone-level certificate changed from %s to %s since the plan", planned.ID, target.ID)
 		}
 		if err := c.cf.enableZoneSetting(ctx); err != nil {
-			return fmt.Errorf("enable zone-level AOP: %w", err)
+			err = fmt.Errorf("enable zone-level AOP: %w", err)
+			if mayHaveApplied(err) {
+				return &EnableUnknownError{Err: err}
+			}
+			return err
 		}
 	}
 	enabled, err := c.cf.getZoneSetting(ctx)
 	if err != nil {
-		return fmt.Errorf("read zone-level AOP setting back: %w", err)
+		err = fmt.Errorf("read zone-level AOP setting back: %w", err)
+		if sent {
+			return &EnableUnknownError{Err: err}
+		}
+		return err
 	}
 	if !enabled {
 		return errors.New("zone-level AOP still reads as disabled")

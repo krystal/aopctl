@@ -347,7 +347,10 @@ none and reports Cloudflare's error if there is one.
 active zone-level certificate and `AOP_CA_CERT` signed the newest active one,
 which Cloudflare then uses. It asks for confirmation unless you pass `--yes`,
 checks the certificates again just before the change, and reads the setting
-back. If zone-level AOP is already on, it changes nothing. To turn zone-level
+back. If the request fails without a usable response or with a server error,
+or the read-back fails, it reports that zone-level AOP may now be enabled, so
+run `aopctl zone status` before you retry. If zone-level AOP is already on, it
+changes nothing. To turn zone-level
 AOP off, use the Cloudflare dashboard or this API request:
 
 ```text

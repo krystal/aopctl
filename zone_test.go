@@ -522,6 +522,51 @@ func TestZoneEnable(t *testing.T) {
 		}
 	})
 
+	for _, tt := range []struct {
+		name    string
+		respond func(t *testing.T, w http.ResponseWriter)
+		unknown bool
+	}{
+		{"server error", func(_ *testing.T, w http.ResponseWriter) {
+			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+		}, true},
+		{"reset connection", func(t *testing.T, w http.ResponseWriter) { cftest.ResetConnection(t, w) }, true},
+		{"rejected", func(_ *testing.T, w http.ResponseWriter) {
+			cftest.WriteAPIError(w, http.StatusBadRequest, 1400, "invalid request")
+		}, false},
+	} {
+		t.Run("PUT "+tt.name, func(t *testing.T) {
+			h := disabledHarness(t)
+			h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+				if r.Method != http.MethodPut {
+					return false
+				}
+				tt.respond(t, w)
+				return true
+			}
+			code, _, stderr := h.run("zone", "enable", "--yes")
+			unknown := strings.Contains(stderr, "zone-level AOP may now be enabled") && strings.Contains(stderr, "check it with aopctl zone status before retrying")
+			if code != 1 || unknown != tt.unknown || !strings.Contains(stderr, "enable zone-level AOP: PUT") {
+				t.Errorf("exit %d, reported an unknown outcome: %v, want %v; stderr:\n%s", code, unknown, tt.unknown, stderr)
+			}
+		})
+	}
+
+	t.Run("read back fails", func(t *testing.T) {
+		h := disabledHarness(t)
+		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+			if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/settings") || !h.fake.ZoneEnabled {
+				return false
+			}
+			cftest.WriteAPIError(w, http.StatusBadGateway, 1000, "bad gateway")
+			return true
+		}
+		code, _, stderr := h.run("zone", "enable", "--yes")
+		if code != 1 || !strings.Contains(stderr, "zone-level AOP may now be enabled: read zone-level AOP setting back") || !strings.Contains(stderr, "aopctl zone status") {
+			t.Errorf("exit %d; stderr:\n%s", code, stderr)
+		}
+	})
+
 	t.Run("setting reads back disabled", func(t *testing.T) {
 		h := disabledHarness(t)
 		h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
