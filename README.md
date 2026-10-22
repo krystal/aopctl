@@ -4,13 +4,14 @@
 [Authenticated Origin Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/per-hostname/)
 (AOP). It creates a dedicated AOP client CA, issues leaf certificates from it,
 uploads them to Cloudflare, points hostnames at them, and deletes the ones you
-no longer use.
+no longer use. It also manages [zone-level AOP](#zone-level-aop) certificates
+from the same CA.
 
 It covers the Cloudflare steps of [Set up Cloudflare][plugin-setup] for
 [traefik-plugin-cloudflare-origin][plugin], the Traefik plugin that verifies
-these certificates at the origin. It does not manage zone-level AOP, DNS, zone
-settings or Traefik configuration. The one exception is
-`aopctl ca show --secret`, which prints the CA Secret from the plugin's
+these certificates at the origin. It does not manage the zone's global AOP
+setting, DNS, other zone settings or Traefik configuration. The one exception
+is `aopctl ca show --secret`, which prints the CA Secret from the plugin's
 [example 1][plugin-example-1].
 
 Per-hostname AOP with your own CA lets an origin tell Cloudflare requests for
@@ -29,11 +30,13 @@ and uses only the Go standard library.
 [plugin-revoke]: https://github.com/krystal/traefik-plugin-cloudflare-origin#revoke-a-leaked-client-certificate
 [plugin-rotate-ca]: https://github.com/krystal/traefik-plugin-cloudflare-origin#rotate-the-ca
 [plugin-access-logs]: https://github.com/krystal/traefik-plugin-cloudflare-origin#access-logs
+[cf-zone-aop]: https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/
+[cf-manage-certs]: https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/manage-certificates/
 
 ## Install
 
 Prebuilt binaries cover Linux and macOS on amd64 and arm64. There are no
-Windows builds: `leaf prune` asks for confirmation through `/dev/tty`.
+Windows builds: `aopctl` asks for confirmation through `/dev/tty`.
 
 ### With mise
 
@@ -106,7 +109,7 @@ version Go records for it, or `(devel)`.
 `aopctl` reads its configuration from environment variables, so any way of
 setting them works. It contains no 1Password code, but the examples here use
 1Password's `op run`: keep `op://` references in an env file, and run each
-`leaf` command through `op run --env-file`.
+`hostname` and `zone` command through `op run --env-file`.
 
 ```sh
 # aop.env
@@ -118,16 +121,16 @@ AOP_HOSTNAMES=app.example.com,admin.example.com
 ```
 
 ```sh
-op run --env-file aop.env -- aopctl leaf status
+op run --env-file aop.env -- aopctl hostname status
 ```
 
-| Variable               | Used by                                                                     |
-| ---------------------- | --------------------------------------------------------------------------- |
-| `AOP_CA_CERT`          | `leaf issue`, `leaf associate` and `leaf prune`; optional for `leaf status` |
-| `AOP_CA_KEY`           | `leaf issue`, as a PKCS#8 PEM                                               |
-| `CLOUDFLARE_API_TOKEN` | every `leaf` command                                                        |
-| `CLOUDFLARE_ZONE_ID`   | every `leaf` command                                                        |
-| `AOP_HOSTNAMES`        | every `leaf` command, comma- or whitespace-separated                        |
+| Variable               | Used by                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| `AOP_CA_CERT`          | every `hostname` and `zone` command; optional for `hostname status` and `zone status` |
+| `AOP_CA_KEY`           | `hostname issue` and `zone issue`, as a PKCS#8 PEM                                    |
+| `CLOUDFLARE_API_TOKEN` | every `hostname` and `zone` command                                                   |
+| `CLOUDFLARE_ZONE_ID`   | every `hostname` and `zone` command                                                   |
+| `AOP_HOSTNAMES`        | every `hostname` command, comma- or whitespace-separated                              |
 
 `AOP_HOSTNAMES` must list every hostname this CA serves in the zone.
 Cloudflare has no API that lists all hostname associations, so `aopctl` only
@@ -135,21 +138,27 @@ sees the hostnames you list. Repeated `--hostname` flags replace the variable.
 A certificate can serve at most 100 hostnames.
 
 Create the API token with the **Zone > SSL and Certificates > Edit**
-permission for the zone. `leaf status` only needs Read, but every other `leaf`
-command writes. Account-owned tokens work. They fail Cloudflare's token verify
-endpoint, which `aopctl` does not use.
+permission for the zone. `hostname status` and `zone status` only need Read,
+but every other `hostname` and `zone` command writes. Cloudflare's API
+reference lists the same permission, as SSL and Certificates Read or Write, for
+the zone-level certificate and setting endpoints. Account-owned tokens work.
+They fail Cloudflare's token verify endpoint, which `aopctl` does not use.
 
 ## Commands
 
-| Command                              | What it does                                                                    |
-| ------------------------------------ | ------------------------------------------------------------------------------- |
-| `aopctl ca create`                   | Create a CA and print a 1Password item template                                 |
-| `aopctl ca show`                     | Describe the CA certificate on stdin, or print it as a Kubernetes Secret        |
-| `aopctl leaf issue`                  | Issue a leaf, upload it and point the listed hostnames at it                    |
-| `aopctl leaf associate --cert-id ID` | Point the listed hostnames at an existing leaf, to resume or roll back an issue |
-| `aopctl leaf status`                 | List the zone's hostname certificates and the listed hostnames' associations    |
-| `aopctl leaf prune --cert-id ID...`  | Delete the named certificates after checking that no listed hostname uses them  |
-| `aopctl version`                     | Print the `aopctl` version                                                      |
+| Command                                  | What it does                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `aopctl ca create`                       | Create a CA and print a 1Password item template                                 |
+| `aopctl ca show`                         | Describe the CA certificate on stdin, or print it as a Kubernetes Secret        |
+| `aopctl hostname issue`                  | Issue a leaf, upload it and point the listed hostnames at it                    |
+| `aopctl hostname associate --cert-id ID` | Point the listed hostnames at an existing leaf, to resume or roll back an issue |
+| `aopctl hostname status`                 | List the zone's hostname certificates and the listed hostnames' associations    |
+| `aopctl hostname prune --cert-id ID...`  | Delete the named certificates after checking that no listed hostname uses them  |
+| `aopctl zone issue`                      | Issue a zone-level leaf, upload it and wait for it to become active             |
+| `aopctl zone enable`                     | Turn on zone-level AOP for the newest active zone-level certificate             |
+| `aopctl zone status`                     | Show the zone-level AOP setting and certificates, and the one in use            |
+| `aopctl zone prune --cert-id ID...`      | Delete the named zone-level certificates, keeping one active while enabled      |
+| `aopctl version`                         | Print the `aopctl` version                                                      |
 
 Run `aopctl <command> -h` for each command's flags. `aopctl` exits with 0 on
 success, 1 on errors and 2 on usage errors.
@@ -180,7 +189,7 @@ op read "op://<vault>/<item>/ca_cert" | aopctl ca show
 op read "op://<vault>/<item>/ca_cert" | aopctl ca show --secret cloudflare-aop-ca --namespace app
 ```
 
-`aopctl leaf issue` issues an EC P-256 leaf (`--key-type rsa-3072` for RSA)
+`aopctl hostname issue` issues an EC P-256 leaf (`--key-type rsa-3072` for RSA)
 for client authentication, valid for 365 days (`--days`). Before it writes
 anything, it checks that the zone has a free certificate slot (Cloudflare
 allows 10) and reads each hostname's association. It refuses a hostname whose
@@ -188,19 +197,20 @@ association is disabled, since someone turned AOP off for it on purpose. It
 then uploads the leaf, waits for Cloudflare to report it `active`, points all
 listed hostnames at it in one request, and waits until each association is
 `active`. `--dry-run` prints the plan and changes nothing. The leaf key is
-only ever sent in the upload request. `leaf issue` never deletes a
+only ever sent in the upload request. `hostname issue` never deletes a
 certificate.
 
-`aopctl leaf prune` deletes only the certificates named with `--cert-id`. It
-refuses a certificate that is not signed by `AOP_CA_CERT` or that a listed
-hostname uses, and checks the listed hostnames again just before each delete.
-It shows a preview and asks for confirmation on the terminal, through
-`/dev/tty` so the prompt works under `op run`, unless you pass `--yes`. A
-certificate already being deleted is waited for, not deleted again.
+`aopctl hostname prune` deletes only the certificates named with
+`--cert-id`. It refuses a certificate that is not signed by `AOP_CA_CERT` or
+that a listed hostname uses, and checks the listed hostnames again just before
+each delete. It shows a preview and asks for confirmation on the terminal,
+through `/dev/tty` so the prompt works under `op run`, unless you pass
+`--yes`. A certificate already being deleted is waited for, not deleted again.
 
-`leaf issue`, `leaf associate` and `leaf prune` poll every 5 seconds within a
-total budget for the whole command, `--timeout`, which defaults to 10
-minutes. When the budget runs out, they report the last state they saw.
+`hostname issue`, `hostname associate` and `hostname prune` poll every 5
+seconds within a total budget for the whole command, `--timeout`, which
+defaults to 10 minutes. When the budget runs out, they report the last state
+they saw.
 
 ## Rotate the leaf certificate
 
@@ -210,24 +220,24 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
    use now:
 
    ```sh
-   op run --env-file aop.env -- aopctl leaf issue --dry-run
+   op run --env-file aop.env -- aopctl hostname issue --dry-run
    ```
 
 2. Issue and roll out the new leaf:
 
    ```sh
-   op run --env-file aop.env -- aopctl leaf issue
+   op run --env-file aop.env -- aopctl hostname issue
    ```
 
    It prints the certificates the listed hostnames no longer use, and the
-   `aopctl leaf prune` command that deletes them.
-3. Check the result with `aopctl leaf status`, and check that requests through
-   Cloudflare still reach the backend with the client IP, for example in the
-   [access log][plugin-access-logs].
+   `aopctl hostname prune` command that deletes them.
+3. Check the result with `aopctl hostname status`, and check that requests
+   through Cloudflare still reach the backend with the client IP, for example
+   in the [access log][plugin-access-logs].
 4. Prune the old certificates soon, with the printed command:
 
    ```sh
-   op run --env-file aop.env -- aopctl leaf prune --cert-id <old ID> --hostname <hostname>...
+   op run --env-file aop.env -- aopctl hostname prune --cert-id <old ID> --hostname <hostname>...
    ```
 
    Cloudflare's documentation says that when several certificates exist, "the
@@ -237,24 +247,24 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
 
 An `active` status in the API does not prove which certificate Cloudflare
 presents to your origin. Before the first production rollout, check it
-against a staging origin: pin the new leaf's fingerprint, which `leaf issue`
-prints, instead of the CA's on a staging hostname. Requests through
-Cloudflare then pass only when Cloudflare presents the new leaf.
+against a staging origin: pin the new leaf's fingerprint, which
+`hostname issue` prints, instead of the CA's on a staging hostname. Requests
+through Cloudflare then pass only when Cloudflare presents the new leaf.
 
 To rotate the CA itself, follow [Rotate the CA][plugin-rotate-ca] in the
-plugin README. `aopctl leaf associate` and `aopctl leaf prune` only accept
-certificates signed by `AOP_CA_CERT`, so roll back to, or prune, the old CA's
-leaves with `AOP_CA_CERT` set to the old CA.
+plugin README. `aopctl hostname associate` and `aopctl hostname prune` only
+accept certificates signed by `AOP_CA_CERT`, so roll back to, or prune, the
+old CA's leaves with `AOP_CA_CERT` set to the old CA.
 
 ## Recover or roll back
 
-If `leaf issue` fails after the upload, it prints the new certificate's ID,
-each hostname's original and observed association, and the commands to
+If `hostname issue` fails after the upload, it prints the new certificate's
+ID, each hostname's original and observed association, and the commands to
 continue or undo the rollout:
 
 - To resume, run the printed
-  `aopctl leaf associate --cert-id <new ID> --hostname ...` command.
-- To roll back, run the printed `aopctl leaf associate` commands, one per
+  `aopctl hostname associate --cert-id <new ID> --hostname ...` command.
+- To roll back, run the printed `aopctl hostname associate` commands, one per
   certificate the hostnames used before, each listing only that certificate's
   hostnames.
 - `aopctl` never voids an association, so for hostnames that had none, it
@@ -266,21 +276,22 @@ continue or undo the rollout:
   {"config":[{"hostname":"<hostname>","cert_id":"<new ID>","enabled":null}]}
   ```
 
-None of these needs a free certificate slot. `leaf associate` only accepts an
-`active` certificate signed by `AOP_CA_CERT`, and `--dry-run` previews it.
-During a CA rotation, the hostnames' original certificates are the old CA's,
-so run the rollback commands with `AOP_CA_CERT` set to the old CA. `leaf
-issue` marks each command that needs this.
+None of these needs a free certificate slot. `hostname associate` only
+accepts an `active` certificate signed by `AOP_CA_CERT`, and `--dry-run`
+previews it. During a CA rotation, the hostnames' original certificates are
+the old CA's, so run the rollback commands with `AOP_CA_CERT` set to the old
+CA. `hostname issue` marks each command that needs this.
 
-If the new certificate never becomes active, `leaf issue` changes no hostname,
-so there is nothing to resume or roll back. It prints the `aopctl leaf prune`
-command that deletes the certificate, so you can run `leaf issue` again, and
-the `aopctl leaf associate` command to use if it becomes active later.
+If the new certificate never becomes active, `hostname issue` changes no
+hostname, so there is nothing to resume or roll back. It prints the
+`aopctl hostname prune` command that deletes the certificate, so you can run
+`hostname issue` again, and the `aopctl hostname associate` command to use if
+it becomes active later.
 
 If the upload fails without a usable response or with a server error, for
-example on a timeout or an HTTP 5xx, `leaf issue` reports that the outcome is
-unknown. Cloudflare may have created the certificate, so run
-`aopctl leaf status` before you retry.
+example on a timeout or an HTTP 5xx, `hostname issue` reports that the outcome
+is unknown. Cloudflare may have created the certificate, so run
+`aopctl hostname status` before you retry.
 
 ## If a leaf key leaks
 
@@ -289,14 +300,116 @@ still connect to the origin directly until it expires or you revoke it, as
 [Revoke a leaked client certificate][plugin-revoke] in the plugin README
 describes. With `aopctl`:
 
-1. Note the leaked leaf's ID and fingerprint, which `aopctl leaf status`
+1. Note the leaked leaf's ID and fingerprint, which `aopctl hostname status`
    prints.
-2. Issue a new leaf with `aopctl leaf issue`.
+2. Issue a new leaf with `aopctl hostname issue`.
 3. Add the leaked leaf's fingerprint to the plugin's
    `revokedCertFingerprints`, and keep the entry until the leaf expires.
-4. Delete the leaked leaf with `aopctl leaf prune --cert-id <ID>`.
+4. Delete the leaked leaf with `aopctl hostname prune --cert-id <ID>`.
 
 If the CA key leaks, [rotate the CA][plugin-rotate-ca].
+
+## Zone-level AOP
+
+With [zone-level AOP][cf-zone-aop] enabled, Cloudflare presents one
+certificate to every origin in the zone. A hostname with a per-hostname
+certificate uses that one instead. Zone-level AOP has its own setting,
+separate from the zone's global AOP setting, `tls_client_auth`, which uses
+Cloudflare's shared certificate. `aopctl` never reads or changes the global
+setting, and it never turns zone-level AOP off.
+
+The API does not say which zone-level certificate Cloudflare uses. Cloudflare's
+[certificate docs][cf-manage-certs] say that when several are `active`, "the
+most recently deployed certificate will be the one enabled and used". `aopctl`
+therefore treats the active certificate with the latest `uploaded_on` as the
+one in use while zone-level AOP is enabled, and labels it as derived. When the
+active certificates' `uploaded_on` values are missing, unreadable or equal, it
+reports the certificate in use as unknown. It ignores each certificate's
+`enabled` field, whose meaning Cloudflare does not document, and only shows it.
+
+`aopctl zone issue` issues a leaf with the same flags and defaults as
+`hostname issue`, uploads it and waits for it to become `active`. It never
+deletes a certificate and never changes the setting. Its plan shows the new
+leaf, the zone-level certificates, the setting and the certificate in use, and
+`--dry-run` stops there. While zone-level AOP is enabled, the new certificate
+takes over the zone as soon as it is active. So when the certificate in use is
+not signed by `AOP_CA_CERT`, or is unknown, `zone issue` asks for confirmation
+first, unless you pass `--yes`: origins that trust only the old CA would
+reject Cloudflare's requests. Afterwards it prints the `aopctl zone prune`
+commands for the previously active certificates, or the `aopctl zone enable`
+command while zone-level AOP is disabled. If the new certificate never becomes
+active, it prints the `aopctl zone prune` command that removes it. If the
+upload outcome is unknown, run `aopctl zone status` before you retry.
+Cloudflare documents no limit on zone-level certificates, so `aopctl` checks
+none and reports Cloudflare's error if there is one.
+
+`aopctl zone enable` turns zone-level AOP on. It refuses unless the zone has an
+active zone-level certificate and `AOP_CA_CERT` signed the newest active one,
+which Cloudflare then uses. It asks for confirmation unless you pass `--yes`,
+checks the certificates again just before the change, and reads the setting
+back. If the request fails without a usable response or with a server error,
+or the read-back fails, it reports that zone-level AOP may now be enabled, so
+run `aopctl zone status` before you retry. If zone-level AOP is already on, it
+changes nothing. To turn zone-level
+AOP off, use the Cloudflare dashboard or this API request:
+
+```text
+PUT /zones/{zone}/origin_tls_client_auth/settings
+{"enabled":false}
+```
+
+`aopctl zone status` shows the setting and each zone-level certificate's ID,
+status, subject, key type, fingerprint, expiry, `uploaded_on`, `enabled` field
+and whether `AOP_CA_CERT` signed it. It marks the certificate in use and warns
+when more than one certificate is active.
+
+`aopctl zone prune` deletes only the certificates named with `--cert-id`. An ID
+is a UUID, with or without dashes, in either case. Like `hostname prune`, it
+refuses a certificate that is missing or not signed by `AOP_CA_CERT`, and waits
+for one already being deleted. While zone-level AOP is enabled, it also refuses
+to delete the last active certificate. When you name every active certificate,
+it keeps the newest one, and Cloudflare uses that one afterwards, which may not
+be the one it uses now. It checks the zone again just before each delete.
+
+When `zone prune` deletes the certificate in use, it shows the one Cloudflare
+falls back to: the newest remaining active certificate. It warns when
+`AOP_CA_CERT` did not sign that certificate, or when it cannot tell which one
+it is, because origins that trust only `AOP_CA_CERT` would then reject
+Cloudflare's requests. Deleting a new certificate to fall back to an older one
+is how you roll back a rotation. It asks for confirmation unless you pass
+`--yes`. `--dry-run` shows the plan without deleting, and exits with 1 when
+the plan refuses or keeps a named certificate.
+
+`zone issue`, `zone enable` and `zone prune` take the same `--timeout` budget
+as the `hostname` commands.
+
+### Set up zone-level AOP
+
+1. Issue a zone-level leaf. With zone-level AOP still disabled, Cloudflare does
+   not use it yet:
+
+   ```sh
+   op run --env-file aop.env -- aopctl zone issue
+   ```
+
+2. Configure the origins to trust the CA, then turn zone-level AOP on:
+
+   ```sh
+   op run --env-file aop.env -- aopctl zone enable --dry-run
+   op run --env-file aop.env -- aopctl zone enable
+   ```
+
+### Rotate the zone-level certificate
+
+Cloudflare's [rotation steps][cf-manage-certs] are to upload the new
+certificate, wait until it is `active`, then delete the previous one:
+
+1. Preview the rotation with `aopctl zone issue --dry-run`.
+2. Run `aopctl zone issue`. It prints the `aopctl zone prune` command for the
+   certificates Cloudflare no longer uses.
+3. Check with `aopctl zone status`, and check that requests through Cloudflare
+   still reach the backend.
+4. Run the printed `aopctl zone prune` command.
 
 ## Use as a Go library
 
@@ -319,9 +432,11 @@ result, err := plan.Apply(ctx)
 
 Each workflow that changes Cloudflare has a `Plan` method that only reads, and
 an `Apply` that runs once. A request's `Progress` callback receives events
-during `Apply`, and errors such as `*aopctl.UploadUnknownError` and
-`*aopctl.HostnameRolloutError` carry what you need to resume or roll back. See
-the [package documentation](https://pkg.go.dev/github.com/krystal/aopctl/aopctl).
+during `Apply`, and errors such as `*aopctl.UploadUnknownError`,
+`*aopctl.HostnameRolloutError` and `*aopctl.ZoneRolloutError` carry what you
+need to resume or roll back. `Hostname…` workflows manage per-hostname AOP, and
+`Zone…` workflows manage zone-level AOP. See the
+[package documentation](https://pkg.go.dev/github.com/krystal/aopctl/aopctl).
 
 ## Development
 

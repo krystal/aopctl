@@ -69,7 +69,7 @@ func TestCAShorterThanLeaf(t *testing.T) {
 	h := newHarness(t)
 	ca := newTestCA(t, 100)
 	h.env["AOP_CA_CERT"], h.env["AOP_CA_KEY"] = ca.certPEM, ca.keyPEM
-	code, _, stderr := h.run("leaf", "issue", "--hostname", "app.example.com")
+	code, _, stderr := h.run("hostname", "issue", "--hostname", "app.example.com")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1; stderr:\n%s", code, stderr)
 	}
@@ -89,7 +89,7 @@ func TestKeyCertMismatch(t *testing.T) {
 
 	h := newHarness(t)
 	h.env["AOP_CA_KEY"] = other.keyPEM
-	code, _, stderr := h.run("leaf", "issue", "--dry-run", "--hostname", "app.example.com")
+	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
 	if code != 1 || !strings.Contains(stderr, "AOP_CA_KEY does not match") {
 		t.Errorf("exit %d, stderr:\n%s", code, stderr)
 	}
@@ -113,7 +113,7 @@ func TestPEMWhitespace(t *testing.T) {
 	h := newHarness(t)
 	h.env["AOP_CA_CERT"] = "\n\n  " + h.ca.certPEM + "\n \n"
 	h.env["AOP_CA_KEY"] = "\t\n" + h.ca.keyPEM + "\n\n"
-	code, _, stderr := h.run("leaf", "issue", "--dry-run", "--hostname", "app.example.com")
+	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}

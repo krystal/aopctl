@@ -73,6 +73,9 @@ const (
 	SkipAlreadyDeleted
 	// SkipInUse is a certificate a listed hostname uses.
 	SkipInUse
+	// SkipLastActive is the last active zone-level certificate, while
+	// zone-level AOP is enabled.
+	SkipLastActive
 )
 
 // PruneSkip is a certificate a prune will not delete.
@@ -94,8 +97,11 @@ type PruneResult struct {
 // PruneFailure is a target a prune did not delete.
 type PruneFailure struct {
 	CertID string
+	// Reason is SkipInUse or SkipLastActive for a target refused just
+	// before its delete, and zero when Err is set.
+	Reason SkipReason
 	// Hostnames lists the hostnames that came to use the certificate after
-	// the plan. It is empty when Err is set.
+	// the plan, for SkipInUse.
 	Hostnames []string
 	Err       error
 }
@@ -209,8 +215,8 @@ func (p *HostnamePrunePlan) Apply(ctx context.Context) (*PruneResult, error) {
 				continue
 			}
 			if using := hostsUsing(p.hosts, current, id); len(using) > 0 {
-				res.NotDeleted = append(res.NotDeleted, PruneFailure{CertID: id, Hostnames: using})
-				emit(p.progress, CertificateRefused{CertID: id, Hostnames: using})
+				res.NotDeleted = append(res.NotDeleted, PruneFailure{CertID: id, Reason: SkipInUse, Hostnames: using})
+				emit(p.progress, CertificateRefused{CertID: id, Reason: SkipInUse, Hostnames: using})
 				continue
 			}
 			if err := c.cf.deleteCert(ctx, id); err != nil {
@@ -218,7 +224,7 @@ func (p *HostnamePrunePlan) Apply(ctx context.Context) (*PruneResult, error) {
 				continue
 			}
 		}
-		if err := c.waitForDeletion(ctx, id); err != nil {
+		if err := c.waitForDeletion(ctx, c.cf.getCert, id); err != nil {
 			failed(id, err)
 			continue
 		}

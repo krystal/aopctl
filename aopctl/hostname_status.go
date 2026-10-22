@@ -25,7 +25,8 @@ type HostnameStatusReport struct {
 	Associations map[string]*Association
 }
 
-// CertificateInfo describes one of the zone's hostname certificates.
+// CertificateInfo describes one of the zone's hostname or zone-level
+// certificates.
 type CertificateInfo struct {
 	Certificate
 	// X509 is the parsed certificate, or nil when X509Err is set.
@@ -33,7 +34,7 @@ type CertificateInfo struct {
 	X509Err error
 	// SignedByCA is false when the request had no CACert.
 	SignedByCA bool
-	// UsedBy lists the hostnames whose association points at the
+	// UsedBy lists the hostnames whose association points at a hostname
 	// certificate, including disabled ones but not voided ones.
 	UsedBy []string
 }
@@ -61,11 +62,8 @@ func (c *Client) HostnameStatus(ctx context.Context, r HostnameStatusRequest) (*
 
 	report := &HostnameStatusReport{Hostnames: hosts, Associations: assocs}
 	for _, cert := range certs {
-		info := CertificateInfo{Certificate: cert, UsedBy: hostsUsing(hosts, assocs, cert.ID)}
-		info.X509, info.X509Err = ParseCertificatePEM(cert.PEM)
-		if r.CACert != nil && info.X509 != nil {
-			info.SignedByCA = info.X509.CheckSignatureFrom(r.CACert) == nil
-		}
+		info := certificateInfo(cert, r.CACert)
+		info.UsedBy = hostsUsing(hosts, assocs, cert.ID)
 		report.Certificates = append(report.Certificates, info)
 	}
 	return report, nil

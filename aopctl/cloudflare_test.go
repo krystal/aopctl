@@ -297,3 +297,22 @@ func TestAPIMessagesTolerateShapes(t *testing.T) {
 		t.Errorf("errors = %+v", env.Errors)
 	}
 }
+
+// TestZoneCertPathGuards checks that the zone certificate requests refuse
+// an ID that could reach another path, before sending anything.
+func TestZoneCertPathGuards(t *testing.T) {
+	requests := 0
+	cf := newTestClient(t, func(http.ResponseWriter, *http.Request) { requests++ })
+	ctx := context.Background()
+	for _, id := range []string{"settings", "hostnames", "../settings", "", strings.Repeat("a", 31)} {
+		if _, err := cf.getZoneCert(ctx, id); err == nil {
+			t.Errorf("getZoneCert(%q) succeeded", id)
+		}
+		if err := cf.deleteZoneCert(ctx, id); err == nil {
+			t.Errorf("deleteZoneCert(%q) succeeded", id)
+		}
+	}
+	if requests != 0 {
+		t.Errorf("sent %d requests, want none", requests)
+	}
+}

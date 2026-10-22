@@ -73,7 +73,7 @@ func formatEnabled(enabled *bool) string {
 }
 
 // otherCANote precedes a printed command for certificates AOP_CA_CERT did
-// not sign, which leaf associate and leaf prune refuse.
+// not sign, which hostname associate and hostname prune refuse.
 func otherCANote(ids []string) string {
 	return fmt.Sprintf("AOP_CA_CERT did not sign %s, so run the next command with AOP_CA_CERT set to the CA that did. During a CA rotation, that is the old CA.", strings.Join(ids, ", "))
 }
@@ -88,10 +88,10 @@ func cliError(err error) error {
 		return fmt.Errorf("%w: use a smaller --days or rotate the CA", err)
 	}
 	if _, ok := errors.AsType[*aopctl.CertificateLimitError](err); ok {
-		return fmt.Errorf("%w (see aopctl leaf status and aopctl leaf prune)", err)
+		return fmt.Errorf("%w (see aopctl hostname status and aopctl hostname prune)", err)
 	}
 	if _, ok := errors.AsType[*aopctl.UploadUnknownError](err); ok {
-		return fmt.Errorf("%w, so run aopctl leaf status before retrying", err)
+		return fmt.Errorf("%w, so run aopctl hostname status before retrying", err)
 	}
 	if errors.Is(err, aopctl.ErrKeyMismatch) {
 		return errors.New("AOP_CA_KEY does not match the certificate in AOP_CA_CERT")
@@ -114,10 +114,16 @@ func (a *app) progress(e aopctl.Event) {
 			fmt.Fprintf(a.stderr, "Refused %s: not found\n", e.CertID)
 		case aopctl.SkipInUse:
 			fmt.Fprintf(a.stderr, "Refused %s: still used by %s\n", e.CertID, strings.Join(e.Hostnames, ", "))
+		case aopctl.SkipLastActive:
+			fmt.Fprintf(a.stderr, "Refused %s: it is the last active zone certificate and zone-level AOP is enabled. Upload a replacement with aopctl zone issue first.\n", e.CertID)
 		default:
 			fmt.Fprintf(a.stderr, "Refused %s: %v\n", e.CertID, cliError(e.Err))
 		}
 	case aopctl.CertificateRefused:
+		if e.Reason == aopctl.SkipLastActive {
+			fmt.Fprintf(a.stderr, "Refused %s: it is now the last active zone certificate and zone-level AOP is enabled\n", e.CertID)
+			break
+		}
 		fmt.Fprintf(a.stderr, "Refused %s: now used by %s\n", e.CertID, strings.Join(e.Hostnames, ", "))
 	case aopctl.CertificateDeleteFailed:
 		fmt.Fprintf(a.stderr, "Failed %s: %v\n", e.CertID, e.Err)
@@ -126,8 +132,8 @@ func (a *app) progress(e aopctl.Event) {
 	}
 }
 
-func (a *app) leafIssue(args []string) error {
-	fs := a.flagSet("leaf issue", "[flags]")
+func (a *app) hostnameIssue(args []string) error {
+	fs := a.flagSet("hostname issue", "[flags]")
 	var hostFlags stringList
 	fs.Var(&hostFlags, "hostname", "hostname to point at the new leaf (repeatable, replaces AOP_HOSTNAMES)")
 	keyType := fs.String("key-type", string(aopctl.KeyTypeECP256), "key type: "+string(aopctl.KeyTypeECP256)+" or "+string(aopctl.KeyTypeRSA3072))
@@ -188,8 +194,8 @@ func (a *app) leafIssue(args []string) error {
 	}
 
 	leaf, planHosts, current := plan.Leaf(), plan.Hostnames(), plan.Current()
-	fmt.Fprintf(a.stderr, "New leaf:\n  subject:     %s\n  key type:    %s\n  expires:     %s\n  fingerprint: %s\nHostnames:\n",
-		leaf.Subject, describeKey(leaf.PublicKey), leaf.NotAfter.UTC().Format(time.RFC3339), aopctl.Fingerprint(leaf))
+	printLeaf(a.stderr, leaf)
+	fmt.Fprintln(a.stderr, "Hostnames:")
 	for _, h := range planHosts {
 		state := "none"
 		if assoc := current[h]; assoc != nil {
@@ -228,11 +234,11 @@ func (a *app) leafIssue(args []string) error {
 	fmt.Fprintf(a.stdout, "They no longer use: %s\n", strings.Join(result.Superseded, ", "))
 	fmt.Fprintln(a.stdout, "Delete those soon. Cloudflare's docs leave open which certificate a hostname uses while several exist:")
 	if len(ownIDs) > 0 {
-		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(ownIDs, " --cert-id "), hostnameFlags(planHosts))
+		fmt.Fprintf(a.stdout, "  aopctl hostname prune --cert-id %s%s\n", strings.Join(ownIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	if len(otherIDs) > 0 {
 		fmt.Fprintf(a.stdout, "  %s\n", otherCANote(otherIDs))
-		fmt.Fprintf(a.stdout, "  aopctl leaf prune --cert-id %s%s\n", strings.Join(otherIDs, " --cert-id "), hostnameFlags(planHosts))
+		fmt.Fprintf(a.stdout, "  aopctl hostname prune --cert-id %s%s\n", strings.Join(otherIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	return nil
 }
@@ -257,13 +263,13 @@ func reportRollout(w io.Writer, r *aopctl.HostnameRolloutError) {
 		fmt.Fprintf(w, "  %s: %s -> %s\n", h, r.Original[h].String(), observed)
 	}
 	if !r.AssociateSent {
-		// The certificate never became active, so leaf associate would
+		// The certificate never became active, so hostname associate would
 		// refuse it and there is nothing to roll back.
-		fmt.Fprintf(w, "No hostname was changed. If certificate %s becomes active later, point the listed hostnames at it with:\n  aopctl leaf associate --cert-id %s%s\n", r.CertID, r.CertID, hostnameFlags(r.Hostnames))
-		fmt.Fprintf(w, "Otherwise, delete it and run aopctl leaf issue again:\n  aopctl leaf prune --cert-id %s%s\n", r.CertID, hostnameFlags(r.Hostnames))
+		fmt.Fprintf(w, "No hostname was changed. If certificate %s becomes active later, point the listed hostnames at it with:\n  aopctl hostname associate --cert-id %s%s\n", r.CertID, r.CertID, hostnameFlags(r.Hostnames))
+		fmt.Fprintf(w, "Otherwise, delete it and run aopctl hostname issue again:\n  aopctl hostname prune --cert-id %s%s\n", r.CertID, hostnameFlags(r.Hostnames))
 		return
 	}
-	fmt.Fprintf(w, "To resume, run:\n  aopctl leaf associate --cert-id %s%s\n", r.CertID, hostnameFlags(r.Hostnames))
+	fmt.Fprintf(w, "To resume, run:\n  aopctl hostname associate --cert-id %s%s\n", r.CertID, hostnameFlags(r.Hostnames))
 
 	var oldIDs, unassociated []string
 	byID := map[string][]string{}
@@ -286,7 +292,7 @@ func reportRollout(w io.Writer, r *aopctl.HostnameRolloutError) {
 		if !r.SignedByCA[id] {
 			fmt.Fprintf(w, "  %s\n", otherCANote([]string{id}))
 		}
-		fmt.Fprintf(w, "  aopctl leaf associate --cert-id %s%s\n", id, hostnameFlags(byID[id]))
+		fmt.Fprintf(w, "  aopctl hostname associate --cert-id %s%s\n", id, hostnameFlags(byID[id]))
 	}
 	if len(unassociated) > 0 {
 		config := make([]associationConfig, len(unassociated))
@@ -299,8 +305,8 @@ func reportRollout(w io.Writer, r *aopctl.HostnameRolloutError) {
 	}
 }
 
-func (a *app) leafAssociate(args []string) error {
-	fs := a.flagSet("leaf associate", "--cert-id ID [flags]")
+func (a *app) hostnameAssociate(args []string) error {
+	fs := a.flagSet("hostname associate", "--cert-id ID [flags]")
 	certID := fs.String("cert-id", "", "certificate to point the hostnames at (required)")
 	var hostFlags stringList
 	fs.Var(&hostFlags, "hostname", "hostname to point at the certificate (repeatable, replaces AOP_HOSTNAMES)")
@@ -361,8 +367,8 @@ func (a *app) leafAssociate(args []string) error {
 	return nil
 }
 
-func (a *app) leafStatus(args []string) error {
-	fs := a.flagSet("leaf status", "[flags]")
+func (a *app) hostnameStatus(args []string) error {
+	fs := a.flagSet("hostname status", "[flags]")
 	var hostFlags stringList
 	fs.Var(&hostFlags, "hostname", "hostname to report (repeatable, replaces AOP_HOSTNAMES)")
 	if err := parseFlags(fs, args); err != nil {
@@ -443,8 +449,8 @@ func describeExpiry(expiresOn string, parsed *x509.Certificate, now time.Time) s
 	return fmt.Sprintf("%s (%d days left)", expires, days)
 }
 
-func (a *app) leafPrune(args []string) error {
-	fs := a.flagSet("leaf prune", "--cert-id ID... [flags]")
+func (a *app) hostnamePrune(args []string) error {
+	fs := a.flagSet("hostname prune", "--cert-id ID... [flags]")
 	var idFlags, hostFlags stringList
 	fs.Var(&idFlags, "cert-id", "certificate to delete (repeatable, required)")
 	fs.Var(&hostFlags, "hostname", "hostname to check before deleting (repeatable, replaces AOP_HOSTNAMES)")
@@ -466,7 +472,7 @@ func (a *app) leafPrune(args []string) error {
 		}
 	}
 	if len(ids) == 0 {
-		return usagef("--cert-id is required: run aopctl leaf status to find certificates the listed hostnames no longer use")
+		return usagef("--cert-id is required: run aopctl hostname status to find certificates the listed hostnames no longer use")
 	}
 	if err := validateTimeout(*timeout); err != nil {
 		return err

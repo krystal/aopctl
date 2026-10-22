@@ -19,8 +19,13 @@ import (
 const (
 	userAgent = "aopctl"
 
-	hostnamesPath = "/zones/{zone}/origin_tls_client_auth/hostnames"
-	certsPath     = hostnamesPath + "/certificates"
+	// zonePath lists and uploads zone-level certificates. A certificate
+	// path appends its ID, which ValidZoneCertID keeps from reaching the
+	// settings or hostnames paths.
+	zonePath         = "/zones/{zone}/origin_tls_client_auth"
+	zoneSettingsPath = zonePath + "/settings"
+	hostnamesPath    = zonePath + "/hostnames"
+	certsPath        = hostnamesPath + "/certificates"
 
 	// codeNoAssociation comes with a 404 for a hostname without an
 	// association.
@@ -55,6 +60,13 @@ type Certificate struct {
 	ExpiresOn string `json:"expires_on"`
 	// PEM is the certificate, without its key.
 	PEM string `json:"certificate"`
+	// UploadedOn is Cloudflare's uploaded_on field, as Cloudflare sent it.
+	// Only zone-level certificates have it.
+	UploadedOn string `json:"uploaded_on"`
+	// Enabled is a zone-level certificate's enabled field, whose meaning
+	// Cloudflare does not document. aopctl bases no decision on it. It is
+	// nil when the field is missing.
+	Enabled *bool `json:"enabled"`
 }
 
 // Association is a hostname's AOP setting.
@@ -313,10 +325,14 @@ func (c *cfClient) do(ctx context.Context, method, path string, query url.Values
 
 // listCerts returns every hostname certificate in the zone, across all pages.
 func (c *cfClient) listCerts(ctx context.Context) ([]Certificate, error) {
+	return c.listAll(ctx, certsPath)
+}
+
+func (c *cfClient) listAll(ctx context.Context, path string) ([]Certificate, error) {
 	var all []Certificate
 	for page := 1; ; page++ {
 		var certs []Certificate
-		totalPages, err := c.do(ctx, http.MethodGet, certsPath, url.Values{"page": {strconv.Itoa(page)}}, nil, &certs)
+		totalPages, err := c.do(ctx, http.MethodGet, path, url.Values{"page": {strconv.Itoa(page)}}, nil, &certs)
 		if err != nil {
 			return nil, err
 		}
@@ -385,5 +401,86 @@ func (c *cfClient) associate(ctx context.Context, certID string, hostnames []str
 	}
 	body := map[string][]associationConfig{"config": config}
 	_, err := c.do(ctx, http.MethodPut, hostnamesPath, nil, body, nil)
+	return err
+}
+
+// listZoneCerts returns every zone-level certificate, across all pages.
+// Cloudflare does not document paging for this list, so a repeated ID,
+// which ignored paging would cause, fails the list rather than count twice.
+// So does an ID that ValidZoneCertID rejects, which could not be used in a
+// path.
+func (c *cfClient) listZoneCerts(ctx context.Context) ([]Certificate, error) {
+	certs, err := c.listAll(ctx, zonePath)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, cert := range certs {
+		if !ValidZoneCertID(cert.ID) {
+			return nil, errors.New("the list has an invalid certificate ID")
+		}
+		if seen[cert.ID] {
+			return nil, fmt.Errorf("the list has certificate %s more than once", cert.ID)
+		}
+		seen[cert.ID] = true
+	}
+	return certs, nil
+}
+
+func (c *cfClient) getZoneCert(ctx context.Context, id string) (*Certificate, error) {
+	if err := checkZoneCertID(id); err != nil {
+		return nil, err
+	}
+	var cert Certificate
+	if _, err := c.do(ctx, http.MethodGet, zonePath+"/"+id, nil, nil, &cert); err != nil {
+		return nil, err
+	}
+	return &cert, nil
+}
+
+// uploadZoneCert returns the new zone certificate's ID, unchecked.
+func (c *cfClient) uploadZoneCert(ctx context.Context, certPEM, keyPEM string) (string, error) {
+	body := map[string]string{"certificate": certPEM, "private_key": keyPEM}
+	var cert struct {
+		ID string `json:"id"`
+	}
+	if _, err := c.do(ctx, http.MethodPost, zonePath, nil, body, &cert); err != nil {
+		return "", err
+	}
+	return cert.ID, nil
+}
+
+func (c *cfClient) deleteZoneCert(ctx context.Context, id string) error {
+	if err := checkZoneCertID(id); err != nil {
+		return err
+	}
+	_, err := c.do(ctx, http.MethodDelete, zonePath+"/"+id, nil, nil, nil)
+	return err
+}
+
+// zoneSetting is the zone-level AOP setting, which is separate from the
+// zone's global AOP setting, tls_client_auth.
+type zoneSetting struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (s *zoneSetting) validate() error {
+	if s.Enabled == nil {
+		return errors.New("setting has no enabled field")
+	}
+	return nil
+}
+
+func (c *cfClient) getZoneSetting(ctx context.Context) (bool, error) {
+	var setting zoneSetting
+	if _, err := c.do(ctx, http.MethodGet, zoneSettingsPath, nil, nil, &setting); err != nil {
+		return false, err
+	}
+	return *setting.Enabled, nil
+}
+
+// enableZoneSetting turns zone-level AOP on. aopctl never turns it off.
+func (c *cfClient) enableZoneSetting(ctx context.Context) error {
+	_, err := c.do(ctx, http.MethodPut, zoneSettingsPath, nil, map[string]bool{"enabled": true}, nil)
 	return err
 }

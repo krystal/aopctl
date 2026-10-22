@@ -57,9 +57,9 @@ func countIn(reqs []cftest.Request, method, suffix string) int {
 	return n
 }
 
-func TestLeafIssueDryRun(t *testing.T) {
+func TestHostnameIssueDryRun(t *testing.T) {
 	h := issueHarness(t)
-	code, _, stderr := h.run("leaf", "issue", "--dry-run")
+	code, _, stderr := h.run("hostname", "issue", "--dry-run")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
@@ -78,9 +78,9 @@ func TestLeafIssueDryRun(t *testing.T) {
 	}
 }
 
-func TestLeafIssue(t *testing.T) {
+func TestHostnameIssue(t *testing.T) {
 	h := issueHarness(t)
-	code, stdout, stderr := h.run("leaf", "issue")
+	code, stdout, stderr := h.run("hostname", "issue")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
@@ -162,7 +162,7 @@ func TestLeafIssue(t *testing.T) {
 
 	for _, want := range []string{
 		"They no longer use: old-1, old-2",
-		"aopctl leaf prune --cert-id old-1 --cert-id old-2 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
+		"aopctl hostname prune --cert-id old-1 --cert-id old-2 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout)
@@ -170,13 +170,13 @@ func TestLeafIssue(t *testing.T) {
 	}
 }
 
-func TestLeafIssueFailures(t *testing.T) {
+func TestHostnameIssueFailures(t *testing.T) {
 	t.Run("no free slot", func(t *testing.T) {
 		h := issueHarness(t)
 		for i := range 8 {
 			h.fake.AddCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -194,8 +194,8 @@ func TestLeafIssueFailures(t *testing.T) {
 			cftest.ResetConnection(t, w)
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl leaf status before retrying") {
+		code, _, stderr := h.run("hostname", "issue")
+		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
 		if strings.Contains(stderr, "To resume") {
@@ -215,7 +215,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			cftest.WriteCutOff(t, w, http.StatusOK)
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "HTTP 200: unexpected EOF") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -233,8 +233,8 @@ func TestLeafIssueFailures(t *testing.T) {
 			cftest.WriteEnvelope(w, http.StatusOK, map[string]any{"id": 1, "status": "initializing"}, nil)
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
-		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl leaf status before retrying") {
+		code, _, stderr := h.run("hostname", "issue")
+		if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
 		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
@@ -251,7 +251,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			cftest.WriteAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "upload failed") || strings.Contains(stderr, "outcome unknown") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -279,8 +279,8 @@ func TestLeafIssueFailures(t *testing.T) {
 				cftest.WriteRaw(w, tt.status, "application/json", tt.body)
 				return true
 			}
-			code, _, stderr := h.run("leaf", "issue")
-			if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl leaf status before retrying") {
+			code, _, stderr := h.run("hostname", "issue")
+			if code != 1 || !strings.Contains(stderr, "upload outcome unknown") || !strings.Contains(stderr, "aopctl hostname status before retrying") {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
 			if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
@@ -293,7 +293,7 @@ func TestLeafIssueFailures(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.UploadStatuses = []string{"pending_deployment"}
 		h.waitLimit = 3
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last status pending_deployment") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -305,14 +305,14 @@ func TestLeafIssueFailures(t *testing.T) {
 	t.Run("deployment timed out", func(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.UploadStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "certificate new-1 is deployment_timed_out") || !strings.Contains(stderr, "New certificate: new-1") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
 		if n := h.fake.Count(http.MethodPut, "/hostnames"); n != 0 {
 			t.Errorf("sent %d PUTs", n)
 		}
-		// leaf associate refuses a certificate that is not active, and no
+		// hostname associate refuses a certificate that is not active, and no
 		// hostname changed, so there is nothing to resume or roll back.
 		for _, unwanted := range []string{"To resume", "To roll back"} {
 			if strings.Contains(stderr, unwanted) {
@@ -323,15 +323,15 @@ func TestLeafIssueFailures(t *testing.T) {
 		for _, want := range []string{
 			"No hostname was changed.",
 			"If certificate new-1 becomes active later",
-			"aopctl leaf associate --cert-id new-1" + hosts,
-			"aopctl leaf prune --cert-id new-1" + hosts,
+			"aopctl hostname associate --cert-id new-1" + hosts,
+			"aopctl hostname prune --cert-id new-1" + hosts,
 		} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("stderr lacks %q:\n%s", want, stderr)
 			}
 		}
 
-		prune := commandLines(stderr, "aopctl leaf prune --cert-id new-1")
+		prune := commandLines(stderr, "aopctl hostname prune --cert-id new-1")
 		if len(prune) != 1 {
 			t.Fatalf("want one prune command, got %q", prune)
 		}
@@ -353,7 +353,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -363,9 +363,9 @@ func TestLeafIssueFailures(t *testing.T) {
 		}
 		for _, want := range []string{
 			"New certificate: new-1",
-			"aopctl leaf associate --cert-id new-1 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
-			"aopctl leaf associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
-			"aopctl leaf associate --cert-id old-2 --hostname c.example.com",
+			"aopctl hostname associate --cert-id new-1 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
+			"aopctl hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
+			"aopctl hostname associate --cert-id old-2 --hostname c.example.com",
 		} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("stderr lacks %q:\n%s", want, stderr)
@@ -377,7 +377,7 @@ func TestLeafIssueFailures(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.waitLimit = 4
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -401,7 +401,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			}
 			return false
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "read association for b.example.com") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -420,7 +420,7 @@ func TestLeafIssueFailures(t *testing.T) {
 			return false
 		}
 		h.waitLimit = 20
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if w := h.fake.Writes(); len(w) != 0 {
 			t.Fatalf("sent %d write requests", len(w))
 		}
@@ -432,7 +432,7 @@ func TestLeafIssueFailures(t *testing.T) {
 	t.Run("disabled hostname", func(t *testing.T) {
 		h := issueHarness(t)
 		h.fake.SetAssoc(hostC, "old-2", new(false))
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "c.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -443,7 +443,7 @@ func TestLeafIssueFailures(t *testing.T) {
 }
 
 // A response to the upload whose other fields drifted still yields the ID.
-func TestLeafIssueUploadDrift(t *testing.T) {
+func TestHostnameIssueUploadDrift(t *testing.T) {
 	h := issueHarness(t)
 	h.fake.Hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
 		if r.Method != http.MethodPost {
@@ -453,7 +453,7 @@ func TestLeafIssueUploadDrift(t *testing.T) {
 		cftest.WriteEnvelope(w, http.StatusOK, map[string]any{"id": "new-1", "status": "initializing", "expires_on": 1893456000}, nil)
 		return true
 	}
-	code, stdout, stderr := h.run("leaf", "issue")
+	code, stdout, stderr := h.run("hostname", "issue")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
@@ -466,9 +466,9 @@ func TestLeafIssueUploadDrift(t *testing.T) {
 	}
 }
 
-// TestLeafIssueTransientPolling covers polling reads that fail with HTTP 429
+// TestHostnameIssueTransientPolling covers polling reads that fail with HTTP 429
 // or a 5xx.
-func TestLeafIssueTransientPolling(t *testing.T) {
+func TestHostnameIssueTransientPolling(t *testing.T) {
 	// failFirst answers the first len(statuses) GETs whose path ends in suffix
 	// with those statuses, after a PUT when afterPut is set.
 	failFirst := func(h *harness, suffix string, afterPut bool, statuses ...int) {
@@ -497,7 +497,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
 		failFirst(h, "/certificates/new-1", false, http.StatusServiceUnavailable, http.StatusTooManyRequests)
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -510,7 +510,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
 		failFirst(h, "/hostnames/"+hostA, true, http.StatusServiceUnavailable, http.StatusTooManyRequests)
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -523,7 +523,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 3
 		failFirst(h, "/certificates/new-1", false, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusServiceUnavailable)
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "timed out waiting for certificate new-1 to become active: last error: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 503") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -536,7 +536,7 @@ func TestLeafIssueTransientPolling(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
 		failFirst(h, "/certificates/new-1", false, http.StatusBadRequest)
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 400") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -581,9 +581,9 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		afterPath string
 		suffix    string
 	}{
-		{"certificate", issueHarness, []string{"leaf", "issue"}, http.MethodPost, "/certificates", "/certificates/new-1"},
-		{"association", issueHarness, []string{"leaf", "issue"}, http.MethodPut, "/hostnames", "/hostnames/" + hostA},
-		{"deletion", pruneHarness, []string{"leaf", "prune", "--cert-id", "old", "--yes"}, http.MethodDelete, "/certificates/old", "/certificates/old"},
+		{"certificate", issueHarness, []string{"hostname", "issue"}, http.MethodPost, "/certificates", "/certificates/new-1"},
+		{"association", issueHarness, []string{"hostname", "issue"}, http.MethodPut, "/hostnames", "/hostnames/" + hostA},
+		{"deletion", pruneHarness, []string{"hostname", "prune", "--cert-id", "old", "--yes"}, http.MethodDelete, "/certificates/old", "/certificates/old"},
 	} {
 		t.Run(tt.name+" polling recovers from a cut-off body", func(t *testing.T) {
 			h := tt.setup(t)
@@ -610,7 +610,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		// connection closes before the response, so the fake resets twice
 		// to make sure aopctl sees the error.
 		failGets(h, http.MethodPost, "/certificates/new-1", 2, func(w http.ResponseWriter) { cftest.ResetConnection(t, w) })
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -627,7 +627,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 		failGets(h, http.MethodPost, "/certificates/new-1", 1, func(w http.ResponseWriter) {
 			cftest.WriteRaw(w, http.StatusOK, "text/html", "<html>maintenance</html>")
 		})
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, `check certificate new-1: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/new-1: HTTP 200: undecodable response (content type "text/html")`) {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -637,7 +637,7 @@ func TestPollingIncompleteResponses(t *testing.T) {
 	})
 }
 
-func TestLeafIssueAssociationTimedOut(t *testing.T) {
+func TestHostnameIssueAssociationTimedOut(t *testing.T) {
 	t.Run("stale on the old certificate", func(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
@@ -657,7 +657,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 			}, nil)
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -670,7 +670,7 @@ func TestLeafIssueAssociationTimedOut(t *testing.T) {
 		h := issueHarness(t)
 		h.waitLimit = 20
 		h.fake.AssocStatuses = []string{"pending_deployment", cftest.StatusDeploymentTimedOut}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 || !strings.Contains(stderr, "association for a.example.com is deployment_timed_out") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -693,7 +693,7 @@ func commandLines(output, prefix string) [][]string {
 	return cmds
 }
 
-func TestLeafIssueLastSlotRecovery(t *testing.T) {
+func TestHostnameIssueLastSlotRecovery(t *testing.T) {
 	h := issueHarness(t)
 	for i := range 7 {
 		h.fake.AddCert("spare-"+string(rune('a'+i)), h.ca.issue(t))
@@ -705,11 +705,11 @@ func TestLeafIssueLastSlotRecovery(t *testing.T) {
 		cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 		return true
 	}
-	code, _, stderr := h.run("leaf", "issue")
+	code, _, stderr := h.run("hostname", "issue")
 	if code != 1 {
 		t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
 	}
-	resume := commandLines(stderr, "aopctl leaf associate --cert-id new-1")
+	resume := commandLines(stderr, "aopctl hostname associate --cert-id new-1")
 	if len(resume) != 1 {
 		t.Fatalf("want one resume command, got %q", resume)
 	}
@@ -730,7 +730,7 @@ func TestLeafIssueLastSlotRecovery(t *testing.T) {
 	}
 }
 
-func TestLeafIssueRollbackOutput(t *testing.T) {
+func TestHostnameIssueRollbackOutput(t *testing.T) {
 	h := issueHarness(t)
 	// The PUT applies to hostA and hostC only, then fails.
 	h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
@@ -742,7 +742,7 @@ func TestLeafIssueRollbackOutput(t *testing.T) {
 		cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 		return true
 	}
-	code, _, stderr := h.run("leaf", "issue")
+	code, _, stderr := h.run("hostname", "issue")
 	if code != 1 {
 		t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
 	}
@@ -758,14 +758,14 @@ func TestLeafIssueRollbackOutput(t *testing.T) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr)
 		}
 	}
-	rollback := commandLines(stderr, "aopctl leaf associate --cert-id old-")
+	rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-")
 	got := make([]string, len(rollback))
 	for i, args := range rollback {
 		got[i] = strings.Join(args, " ")
 	}
 	want := []string{
-		"leaf associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
-		"leaf associate --cert-id old-2 --hostname c.example.com",
+		"hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
+		"hostname associate --cert-id old-2 --hostname c.example.com",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("rollback commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -784,9 +784,9 @@ func TestLeafIssueRollbackOutput(t *testing.T) {
 	}
 }
 
-// TestLeafIssueOtherCA covers a CA rotation: AOP_CA_CERT is the new CA, and
+// TestHostnameIssueOtherCA covers a CA rotation: AOP_CA_CERT is the new CA, and
 // old-1 was signed by the old one.
-func TestLeafIssueOtherCA(t *testing.T) {
+func TestHostnameIssueOtherCA(t *testing.T) {
 	setup := func(t *testing.T) (*harness, *testCA) {
 		h := newHarness(t)
 		oldCA := newTestCA(t, 3650)
@@ -809,7 +809,7 @@ func TestLeafIssueOtherCA(t *testing.T) {
 			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		}
-		code, _, stderr := h.run("leaf", "issue")
+		code, _, stderr := h.run("hostname", "issue")
 		if code != 1 {
 			t.Fatalf("issue: exit %d; stderr:\n%s", code, stderr)
 		}
@@ -819,7 +819,7 @@ func TestLeafIssueOtherCA(t *testing.T) {
 		if strings.Contains(stderr, "did not sign cur-1") {
 			t.Errorf("rollback has an other-CA note for cur-1:\n%s", stderr)
 		}
-		rollback := commandLines(stderr, "aopctl leaf associate --cert-id old-1")
+		rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-1")
 		if len(rollback) != 1 {
 			t.Fatalf("want one rollback command for old-1, got %q", rollback)
 		}
@@ -844,14 +844,14 @@ func TestLeafIssueOtherCA(t *testing.T) {
 
 	t.Run("prune hint", func(t *testing.T) {
 		h, _ := setup(t)
-		code, stdout, stderr := h.run("leaf", "issue")
+		code, stdout, stderr := h.run("hostname", "issue")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
 		for _, want := range []string{
-			"aopctl leaf prune --cert-id cur-1 --hostname a.example.com --hostname b.example.com\n",
+			"aopctl hostname prune --cert-id cur-1 --hostname a.example.com --hostname b.example.com\n",
 			"AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did",
-			"aopctl leaf prune --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
+			"aopctl hostname prune --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
 		} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout lacks %q:\n%s", want, stdout)
@@ -860,7 +860,7 @@ func TestLeafIssueOtherCA(t *testing.T) {
 	})
 }
 
-func TestLeafAssociate(t *testing.T) {
+func TestHostnameAssociate(t *testing.T) {
 	setup := func(t *testing.T) *harness {
 		h := newHarness(t)
 		h.fake.AddCert("good", h.ca.issue(t))
@@ -878,7 +878,7 @@ func TestLeafAssociate(t *testing.T) {
 	} {
 		t.Run("refuses "+tt.id, func(t *testing.T) {
 			h := setup(t)
-			code, _, stderr := h.run("leaf", "associate", "--cert-id", tt.id)
+			code, _, stderr := h.run("hostname", "associate", "--cert-id", tt.id)
 			if code != 1 || !strings.Contains(stderr, tt.want) {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
@@ -891,7 +891,7 @@ func TestLeafAssociate(t *testing.T) {
 	t.Run("refuses a disabled hostname", func(t *testing.T) {
 		h := setup(t)
 		h.fake.SetAssoc(hostB, "old", new(false))
-		code, _, stderr := h.run("leaf", "associate", "--cert-id", "good")
+		code, _, stderr := h.run("hostname", "associate", "--cert-id", "good")
 		if code != 1 || !strings.Contains(stderr, "b.example.com has AOP disabled") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -902,7 +902,7 @@ func TestLeafAssociate(t *testing.T) {
 
 	t.Run("dry run", func(t *testing.T) {
 		h := setup(t)
-		code, _, stderr := h.run("leaf", "associate", "--cert-id", "good", "--dry-run")
+		code, _, stderr := h.run("hostname", "associate", "--cert-id", "good", "--dry-run")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -916,7 +916,7 @@ func TestLeafAssociate(t *testing.T) {
 
 	t.Run("associates", func(t *testing.T) {
 		h := setup(t)
-		code, stdout, stderr := h.run("leaf", "associate", "--cert-id", "good")
+		code, stdout, stderr := h.run("hostname", "associate", "--cert-id", "good")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -939,7 +939,7 @@ func TestLeafAssociate(t *testing.T) {
 	})
 }
 
-func TestLeafStatus(t *testing.T) {
+func TestHostnameStatus(t *testing.T) {
 	h := newHarness(t)
 	minePEM := h.ca.issue(t)
 	h.fake.AddCert("mine", minePEM)
@@ -951,7 +951,7 @@ func TestLeafStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, stdout, stderr := h.run("leaf", "status")
+	code, stdout, stderr := h.run("hostname", "status")
 	if code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 	}
@@ -971,7 +971,7 @@ func TestLeafStatus(t *testing.T) {
 	}
 
 	delete(h.env, "AOP_CA_CERT")
-	_, stdout, _ = h.run("leaf", "status")
+	_, stdout, _ = h.run("hostname", "status")
 	if !strings.Contains(stdout, "signed by AOP_CA_CERT: unknown") {
 		t.Errorf("without AOP_CA_CERT:\n%s", stdout)
 	}
@@ -999,11 +999,11 @@ func deletes(h *harness) []string {
 	return ids
 }
 
-func TestLeafPruneRefusals(t *testing.T) {
+func TestHostnamePruneRefusals(t *testing.T) {
 	t.Run("no cert id", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune")
-		if code != 2 || !strings.Contains(stderr, "aopctl leaf status") {
+		code, _, stderr := h.run("hostname", "prune")
+		if code != 2 || !strings.Contains(stderr, "aopctl hostname status") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
 	})
@@ -1011,7 +1011,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 	t.Run("no hostnames", func(t *testing.T) {
 		h := pruneHarness(t)
 		delete(h.env, "AOP_HOSTNAMES")
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "no hostnames") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1022,7 +1022,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 
 	t.Run("in use", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "used", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "used", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Refused used: still used by a.example.com") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1034,7 +1034,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 	t.Run("other CA", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.AddCert("foreign", newTestCA(t, 3650).issue(t))
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "foreign", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "foreign", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Refused foreign: certificate foreign is not signed by AOP_CA_CERT") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1045,7 +1045,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 
 	t.Run("not found", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "missing", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "missing", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Refused missing: not found") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1063,7 +1063,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 			}
 			return false
 		}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "read association for b.example.com") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1082,7 +1082,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 				}
 				return false
 			}
-			code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 			if d := deletes(h); len(d) != 0 {
 				t.Fatalf("deleted %v after an association read without a cert_id", d)
 			}
@@ -1094,7 +1094,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 
 	t.Run("only named ids", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 0 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1110,7 +1110,7 @@ func TestLeafPruneRefusals(t *testing.T) {
 	})
 }
 
-func TestLeafPruneChangeAfterPreview(t *testing.T) {
+func TestHostnamePruneChangeAfterPreview(t *testing.T) {
 	// changeOnReread lets the first read of hostB through and handles the
 	// second, which happens just before the DELETE.
 	changeOnReread := func(h *harness, second func(w http.ResponseWriter) bool) {
@@ -1133,7 +1133,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 			h.fake.Assocs[hostB] = &cftest.Assoc{CertID: "old", Enabled: new(true), Statuses: []string{cftest.StatusActive}}
 			return false
 		})
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if d := deletes(h); len(d) != 0 {
 			t.Fatalf("deleted %v after the certificate came into use", d)
 		}
@@ -1148,7 +1148,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
 			return true
 		})
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if d := deletes(h); len(d) != 0 {
 			t.Fatalf("deleted %v after the re-read failed", d)
 		}
@@ -1158,7 +1158,7 @@ func TestLeafPruneChangeAfterPreview(t *testing.T) {
 	})
 }
 
-func TestLeafPruneConfirmation(t *testing.T) {
+func TestHostnamePruneConfirmation(t *testing.T) {
 	for _, tt := range []struct {
 		answer string
 		delete bool
@@ -1177,7 +1177,7 @@ func TestLeafPruneConfirmation(t *testing.T) {
 			h := pruneHarness(t)
 			tty := &fakeTTY{Reader: strings.NewReader(tt.answer)}
 			h.openTTY = func() (io.ReadWriteCloser, error) { return tty, nil }
-			code, _, stderr := h.run("leaf", "prune", "--cert-id", "old")
+			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old")
 			if !strings.Contains(tty.prompt.String(), "Delete 1 certificate(s)? [y/N]") {
 				t.Errorf("prompt = %q", tty.prompt.String())
 			}
@@ -1196,7 +1196,7 @@ func TestLeafPruneConfirmation(t *testing.T) {
 
 	t.Run("no terminal", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old")
 		if code != 1 || !strings.Contains(stderr, "--yes") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1211,17 +1211,17 @@ func TestLeafPruneConfirmation(t *testing.T) {
 			t.Error("opened the terminal despite --yes")
 			return nil, io.EOF
 		}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 0 || strings.Join(deletes(h), ",") != "old" {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
 	})
 }
 
-func TestLeafPruneCompletion(t *testing.T) {
+func TestHostnamePruneCompletion(t *testing.T) {
 	t.Run("pending then gone", func(t *testing.T) {
 		h := pruneHarness(t)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 0 || !strings.Contains(stderr, "Deleted old") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1233,7 +1233,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 	t.Run("deletion timed out", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion, cftest.StatusDeletionTimedOut}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Failed old: the delete failed at Cloudflare: status deletion_timed_out") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1248,7 +1248,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 			}
 			return false
 		}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
 		if code != 1 || !strings.Contains(stderr, "Failed old") || !strings.Contains(stderr, "Deleted spare") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1275,7 +1275,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 			cftest.WriteRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
 			return true
 		}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--cert-id", "spare", "--yes")
 		if code != 1 || !strings.Contains(stderr, `Failed old: check certificate: GET /zones/{zone}/origin_tls_client_auth/hostnames/certificates/old: HTTP 404: undecodable response (content type "text/html")`) {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1296,7 +1296,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 			cftest.WriteRaw(w, http.StatusNotFound, "text/html", "<html>Not Found</html>")
 			return true
 		}
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes")
 		if code != 1 || !strings.Contains(stderr, "read certificate old: ") || strings.Contains(stderr, "Refused old: not found") {
 			t.Errorf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1308,7 +1308,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 	t.Run("already deleted", func(t *testing.T) {
 		h := pruneHarness(t)
 		h.fake.AddCert("done", h.ca.issue(t), cftest.StatusDeleted)
-		code, _, stderr := h.run("leaf", "prune", "--cert-id", "done", "--yes")
+		code, _, stderr := h.run("hostname", "prune", "--cert-id", "done", "--yes")
 		if code != 0 || !strings.Contains(stderr, "Already deleted: done") || len(deletes(h)) != 0 {
 			t.Errorf("exit %d, deleted %v; stderr:\n%s", code, deletes(h), stderr)
 		}
@@ -1331,7 +1331,7 @@ func TestLeafPruneCompletion(t *testing.T) {
 			h.waitLimit = tt.waitLimit
 			// No --yes and no terminal: a certificate that needs no DELETE
 			// needs no confirmation.
-			code, _, stderr := h.run("leaf", "prune", "--cert-id", "pending")
+			code, _, stderr := h.run("hostname", "prune", "--cert-id", "pending")
 			if code != tt.code || !strings.Contains(stderr, tt.want) {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
@@ -1389,7 +1389,7 @@ func TestBudgetRunsOut(t *testing.T) {
 			h := issueHarness(t)
 			h.fake.UploadStatuses = []string{"pending_deployment"}
 			tt.setup(h)
-			code, _, stderr := h.run("leaf", "issue", "--timeout", budget)
+			code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
 			if code != 1 {
 				t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 			}
@@ -1411,7 +1411,7 @@ func TestBudgetRunsOut(t *testing.T) {
 		h.fake.UploadStatuses = []string{cftest.StatusActive}
 		h.fake.AssocStatuses = []string{"pending_deployment"}
 		h.blockWaits = true
-		code, _, stderr := h.run("leaf", "issue", "--timeout", budget)
+		code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
 		if code != 1 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1448,7 +1448,7 @@ func TestBudgetRunsOut(t *testing.T) {
 			}
 			return false
 		}
-		code, _, stderr := h.run("leaf", "issue", "--timeout", budget)
+		code, _, stderr := h.run("hostname", "issue", "--timeout", budget)
 		if code != 1 {
 			t.Fatalf("exit %d; stderr:\n%s", code, stderr)
 		}
@@ -1471,7 +1471,7 @@ func TestBudgetRunsOut(t *testing.T) {
 			h := pruneHarness(t)
 			h.fake.DeleteStatuses = []string{cftest.StatusPendingDeletion}
 			tt.setup(h)
-			code, _, stderr := h.run("leaf", "prune", "--cert-id", "old", "--yes", "--timeout", budget)
+			code, _, stderr := h.run("hostname", "prune", "--cert-id", "old", "--yes", "--timeout", budget)
 			if code != 1 || !strings.Contains(stderr, "Failed old: timed out waiting for the delete to finish: last status pending_deletion\n") {
 				t.Errorf("exit %d; stderr:\n%s", code, stderr)
 			}
@@ -1489,7 +1489,7 @@ func TestPagination(t *testing.T) {
 		h.fake.AddCert(fmt.Sprintf("cert-%02d", i), h.ca.issue(t))
 	}
 
-	code, stdout, stderr := h.run("leaf", "status")
+	code, stdout, stderr := h.run("hostname", "status")
 	if code != 0 {
 		t.Fatalf("status: exit %d; stderr:\n%s", code, stderr)
 	}
@@ -1498,7 +1498,7 @@ func TestPagination(t *testing.T) {
 	}
 
 	// cert-10 is alone on page 4, and it fills the last slot.
-	code, _, stderr = h.run("leaf", "issue", "--hostname", "app.example.com")
+	code, _, stderr = h.run("hostname", "issue", "--hostname", "app.example.com")
 	if code != 1 || !strings.Contains(stderr, "the zone has 10 hostname certificates") {
 		t.Errorf("issue: exit %d; stderr:\n%s", code, stderr)
 	}

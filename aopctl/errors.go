@@ -14,9 +14,12 @@ var (
 	ErrKeyMismatch = errors.New("the CA key does not match the CA certificate")
 	// ErrPlanApplied is returned by a plan's second Apply.
 	ErrPlanApplied = errors.New("plan already applied")
-	// ErrNotAllDeleted is returned by HostnamePrunePlan.Apply when a target
-	// was not deleted.
+	// ErrNotAllDeleted is returned by HostnamePrunePlan.Apply and
+	// ZonePrunePlan.Apply when a target was not deleted.
 	ErrNotAllDeleted = errors.New("some certificates were not deleted")
+	// ErrNoActiveCertificate is returned for a zone without an active
+	// zone-level certificate, which zone-level AOP needs.
+	ErrNoActiveCertificate = errors.New("the zone has no active zone-level certificate")
 )
 
 // CAExpiryError reports a CA that expires before the leaf it would sign.
@@ -51,11 +54,11 @@ func (e *CertificateLimitError) Error() string {
 }
 
 // UploadUnknownError reports an upload that may have created a certificate:
-// the response was a 5xx, an unsuccessful 2xx, unreadable, or had no
+// the response was a 5xx, an unsuccessful 2xx, unreadable, or had no usable
 // certificate ID. Check the zone's certificates before retrying.
 type UploadUnknownError struct {
-	// Err is the request's error, or nil when the response had no
-	// certificate ID.
+	// Err is the request's error, or describes an unusable certificate ID.
+	// It is nil when the response had no certificate ID.
 	Err error
 }
 
@@ -67,6 +70,36 @@ func (e *UploadUnknownError) Error() string {
 }
 
 func (e *UploadUnknownError) Unwrap() error { return e.Err }
+
+// mayHaveApplied reports whether a failed write may still have taken
+// effect. Only a Cloudflare 4xx shows that it did not. A 5xx, a 2xx or a
+// response that could not be read may follow the change.
+func mayHaveApplied(err error) bool {
+	apiErr, ok := errors.AsType[*apiError](err)
+	return ok && (!apiErr.decoded || apiErr.status < 400 || apiErr.status > 499)
+}
+
+// uploadError classifies a failed upload.
+func uploadError(err error) error {
+	if mayHaveApplied(err) {
+		return &UploadUnknownError{Err: err}
+	}
+	return fmt.Errorf("upload failed: %w", err)
+}
+
+// EnableUnknownError reports a request to enable zone-level AOP that may
+// have taken effect: the response was a 5xx, an unsuccessful 2xx or
+// unreadable, or the setting could not be read back after the request.
+// Check the setting before retrying.
+type EnableUnknownError struct {
+	Err error
+}
+
+func (e *EnableUnknownError) Error() string {
+	return fmt.Sprintf("zone-level AOP may now be enabled: %v", e.Err)
+}
+
+func (e *EnableUnknownError) Unwrap() error { return e.Err }
 
 // HostnameRolloutError reports a new certificate that was uploaded but not
 // rolled out to every hostname, with the state needed to resume or roll
@@ -93,6 +126,21 @@ type HostnameRolloutError struct {
 func (e *HostnameRolloutError) Error() string { return e.Err.Error() }
 
 func (e *HostnameRolloutError) Unwrap() error { return e.Err }
+
+// ZoneRolloutError reports a new zone-level certificate that was uploaded
+// but did not become active.
+type ZoneRolloutError struct {
+	// CertID is the uploaded certificate.
+	CertID string
+	// Enabled is the zone-level AOP setting when planned. While it is
+	// enabled, Cloudflare uses the certificate if it becomes active later.
+	Enabled bool
+	Err     error
+}
+
+func (e *ZoneRolloutError) Error() string { return e.Err.Error() }
+
+func (e *ZoneRolloutError) Unwrap() error { return e.Err }
 
 // timeoutError reports polling that ran out of time. It wraps the context
 // or Wait error that ended it.

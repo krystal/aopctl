@@ -1,4 +1,4 @@
-// Package cftest is a stateful fake of Cloudflare's hostname AOP API, with
+// Package cftest is a stateful fake of Cloudflare's hostname and zone AOP API, with
 // helpers for tests of the aopctl library and command. It does not import
 // the library, so the fake's wire details are checked independently of the
 // client's.
@@ -46,7 +46,7 @@ const (
 // CodeNoAssociation comes with a 404 for a hostname without an association.
 const CodeNoAssociation = 1553
 
-// Fake is a stateful fake of Cloudflare's hostname AOP API.
+// Fake is a stateful fake of Cloudflare's hostname and zone AOP API.
 type Fake struct {
 	Mu       sync.Mutex
 	Certs    []*Cert
@@ -55,9 +55,15 @@ type Fake struct {
 	uploads  int
 	PerPage  int
 
+	// ZoneCerts are the zone-level certificates, and ZoneEnabled is the
+	// zone-level AOP setting.
+	ZoneCerts   []*Cert
+	ZoneEnabled bool
+	zoneUploads int
+
 	// Statuses a certificate or association reports on successive GETs
-	// after an upload, delete or PUT. The last one repeats; "gone" makes a
-	// certificate disappear.
+	// after an upload, delete or PUT, for hostname and zone certificates
+	// alike. The last one repeats; "gone" makes a certificate disappear.
 	UploadStatuses []string
 	DeleteStatuses []string
 	AssocStatuses  []string
@@ -67,11 +73,13 @@ type Fake struct {
 	Hook func(w http.ResponseWriter, r *http.Request, body []byte) bool
 }
 
-// Cert is a hostname certificate in the fake.
+// Cert is a hostname or zone certificate in the fake.
 type Cert struct {
 	ID       string
 	PEM      string
 	Statuses []string
+	// UploadedOn is sent as uploaded_on for zone certificates.
+	UploadedOn string
 }
 
 // Assoc is a hostname's association in the fake.
@@ -141,8 +149,42 @@ func (f *Fake) AssocCertID(host string) string {
 	return ""
 }
 
-func (f *Fake) findCert(id string) (int, *Cert) {
-	for i, c := range f.Certs {
+// ZoneCertID returns the ID the fake gives the nth zone certificate,
+// counting from 1. Zone certificate IDs are UUIDs.
+func ZoneCertID(n int) string {
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
+}
+
+// UploadedOn returns the nth upload time the fake uses, counting from 1, in
+// Cloudflare's format.
+func UploadedOn(n int) string {
+	return time.Date(2026, 1, 1, 0, 0, n, 370000000, time.UTC).Format(time.RFC3339Nano)
+}
+
+// AddZoneCert adds a zone certificate uploaded at uploadedOn, which reports
+// statuses on successive GETs, or active.
+func (f *Fake) AddZoneCert(id, pem, uploadedOn string, statuses ...string) {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	if len(statuses) == 0 {
+		statuses = []string{StatusActive}
+	}
+	f.ZoneCerts = append(f.ZoneCerts, &Cert{ID: id, PEM: pem, Statuses: statuses, UploadedOn: uploadedOn})
+}
+
+// ZoneCertStatus returns the zone certificate's current status, or "" when
+// the fake has no such certificate.
+func (f *Fake) ZoneCertStatus(id string) string {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	if _, c := findCert(f.ZoneCerts, id); c != nil {
+		return c.Statuses[0]
+	}
+	return ""
+}
+
+func findCert(certs []*Cert, id string) (int, *Cert) {
+	for i, c := range certs {
 		if c.ID == id {
 			return i, c
 		}
@@ -240,10 +282,15 @@ func Stall(r *http.Request) {
 }
 
 func certJSON(c *Cert, status string) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"id": c.ID, "certificate": c.PEM, "status": status,
 		"expires_on": "2030-01-01T00:00:00Z", "signature": "ECDSAWithSHA256",
 	}
+	if c.UploadedOn != "" {
+		m["uploaded_on"] = c.UploadedOn
+		m["enabled"] = true
+	}
+	return m
 }
 
 // ServeHTTP records the request, checks the token and routes it.
@@ -257,7 +304,7 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteAPIError(w, http.StatusForbidden, 10000, "Authentication error")
 		return
 	}
-	rest, ok := strings.CutPrefix(r.URL.Path, "/zones/"+Zone+"/origin_tls_client_auth/hostnames")
+	rest, ok := strings.CutPrefix(r.URL.Path, "/zones/"+Zone+"/origin_tls_client_auth")
 	if !ok {
 		WriteAPIError(w, http.StatusNotFound, 7003, "Could not route")
 		return
@@ -265,16 +312,21 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.Hook != nil && f.Hook(w, r, body) {
 		return
 	}
+	rest, ok = strings.CutPrefix(rest, "/hostnames")
+	if !ok {
+		f.zone(w, r, body, rest)
+		return
+	}
 
 	switch {
 	case rest == "" && r.Method == http.MethodPut:
 		f.putAssociations(w, body)
 	case rest == "/certificates" && r.Method == http.MethodGet:
-		f.list(w, r)
+		f.list(w, r, f.Certs)
 	case rest == "/certificates" && r.Method == http.MethodPost:
 		f.Upload(w, body)
 	case strings.HasPrefix(rest, "/certificates/"):
-		f.cert(w, r.Method, strings.TrimPrefix(rest, "/certificates/"))
+		f.cert(w, r.Method, &f.Certs, strings.TrimPrefix(rest, "/certificates/"))
 	case strings.HasPrefix(rest, "/") && r.Method == http.MethodGet:
 		f.association(w, strings.TrimPrefix(rest, "/"))
 	default:
@@ -282,18 +334,45 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *Fake) list(w http.ResponseWriter, r *http.Request) {
+// zone routes the zone-level endpoints, with rest following
+// origin_tls_client_auth.
+func (f *Fake) zone(w http.ResponseWriter, r *http.Request, body []byte, rest string) {
+	switch {
+	case rest == "" && r.Method == http.MethodGet:
+		f.list(w, r, f.ZoneCerts)
+	case rest == "" && r.Method == http.MethodPost:
+		f.UploadZone(w, body)
+	case rest == "/settings" && r.Method == http.MethodGet:
+		WriteEnvelope(w, http.StatusOK, map[string]any{"enabled": f.ZoneEnabled}, nil)
+	case rest == "/settings" && r.Method == http.MethodPut:
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || req.Enabled == nil {
+			WriteAPIError(w, http.StatusBadRequest, 1400, "invalid request")
+			return
+		}
+		f.ZoneEnabled = *req.Enabled
+		WriteEnvelope(w, http.StatusOK, map[string]any{"enabled": f.ZoneEnabled}, nil)
+	case strings.HasPrefix(rest, "/") && !strings.Contains(rest[1:], "/"):
+		f.cert(w, r.Method, &f.ZoneCerts, rest[1:])
+	default:
+		WriteAPIError(w, http.StatusNotFound, 7003, "Could not route")
+	}
+}
+
+func (f *Fake) list(w http.ResponseWriter, r *http.Request, certs []*Cert) {
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
 		page = 1
 	}
-	totalPages := (len(f.Certs) + f.PerPage - 1) / f.PerPage
+	totalPages := (len(certs) + f.PerPage - 1) / f.PerPage
 	result := []any{}
-	for i := (page - 1) * f.PerPage; i < len(f.Certs) && i < page*f.PerPage; i++ {
-		result = append(result, certJSON(f.Certs[i], f.Certs[i].Statuses[0]))
+	for i := (page - 1) * f.PerPage; i < len(certs) && i < page*f.PerPage; i++ {
+		result = append(result, certJSON(certs[i], certs[i].Statuses[0]))
 	}
 	WriteEnvelope(w, http.StatusOK, result, map[string]any{"result_info": map[string]any{
-		"page": page, "per_page": f.PerPage, "total_pages": totalPages, "count": len(result), "total_count": len(f.Certs),
+		"page": page, "per_page": f.PerPage, "total_pages": totalPages, "count": len(result), "total_count": len(certs),
 	}})
 }
 
@@ -318,8 +397,32 @@ func (f *Fake) Upload(w http.ResponseWriter, body []byte) {
 	WriteEnvelope(w, http.StatusOK, certJSON(c, "initializing"), nil)
 }
 
-func (f *Fake) cert(w http.ResponseWriter, method, id string) {
-	i, c := f.findCert(id)
+// UploadZone handles a zone certificate upload body, as a POST does. Call
+// it with Mu held, as from a Hook. The certificate gets the next ZoneCertID
+// and UploadedOn, after those of any certificate the test added.
+func (f *Fake) UploadZone(w http.ResponseWriter, body []byte) {
+	var req struct {
+		Certificate string `json:"certificate"`
+		PrivateKey  string `json:"private_key"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Certificate == "" || req.PrivateKey == "" {
+		WriteAPIError(w, http.StatusBadRequest, 1400, "missing leaf certificate")
+		return
+	}
+	f.zoneUploads++
+	n := 100 + f.zoneUploads
+	c := &Cert{
+		ID:         ZoneCertID(n),
+		PEM:        req.Certificate,
+		Statuses:   append([]string(nil), f.UploadStatuses...),
+		UploadedOn: UploadedOn(n),
+	}
+	f.ZoneCerts = append(f.ZoneCerts, c)
+	WriteEnvelope(w, http.StatusOK, certJSON(c, "initializing"), nil)
+}
+
+func (f *Fake) cert(w http.ResponseWriter, method string, certs *[]*Cert, id string) {
+	i, c := findCert(*certs, id)
 	if c == nil {
 		WriteAPIError(w, http.StatusNotFound, 1551, "certificate not found")
 		return
@@ -328,7 +431,7 @@ func (f *Fake) cert(w http.ResponseWriter, method, id string) {
 	case http.MethodGet:
 		status := next(&c.Statuses)
 		if status == "gone" {
-			f.Certs = append(f.Certs[:i], f.Certs[i+1:]...)
+			*certs = append((*certs)[:i], (*certs)[i+1:]...)
 			WriteAPIError(w, http.StatusNotFound, 1551, "certificate not found")
 			return
 		}

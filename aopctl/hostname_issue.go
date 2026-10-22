@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -150,13 +149,8 @@ func (p *HostnameIssuePlan) Apply(ctx context.Context) (*HostnameIssueResult, er
 		return nil, err
 	}
 	newID, err := c.cf.uploadCert(ctx, p.leafPEM, leafKeyPEM)
-	// Only a Cloudflare 4xx shows that no certificate was created. A 5xx, a
-	// 2xx or a response that could not be read may follow a create.
-	if apiErr, ok := errors.AsType[*apiError](err); ok && (!apiErr.decoded || apiErr.status < 400 || apiErr.status > 499) {
-		return nil, &UploadUnknownError{Err: err}
-	}
 	if err != nil {
-		return nil, fmt.Errorf("upload failed: %w", err)
+		return nil, uploadError(err)
 	}
 	if newID == "" {
 		return nil, &UploadUnknownError{}
@@ -189,7 +183,7 @@ func (p *HostnameIssuePlan) Apply(ctx context.Context) (*HostnameIssueResult, er
 // rollOut points the hostnames at the uploaded certificate, recording what
 // it observes in r.
 func (c *Client) rollOut(ctx context.Context, r *HostnameRolloutError, progress func(Event)) error {
-	if err := c.waitForCert(ctx, r.CertID); err != nil {
+	if err := c.waitForCert(ctx, c.cf.getCert, r.CertID); err != nil {
 		// No association was changed.
 		maps.Copy(r.Observed, r.Original)
 		return err
