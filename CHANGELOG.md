@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/krystal/aopctl/compare/v0.1.0...v0.1.1) (2026-10-22)
+
+
+### Features
+
+* add Windows release builds and console prompts ([#11](https://github.com/krystal/aopctl/issues/11)) ([3dc9e80](https://github.com/krystal/aopctl/commit/3dc9e808d45c9ce0d7fcac1f2cbf6e0a38b19b0f))
+
 ## 0.1.0 (2026-10-22)
 
 
