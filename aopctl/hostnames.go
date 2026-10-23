@@ -11,7 +11,8 @@ import (
 
 // Cloudflare's limits.
 const (
-	// MaxHostnames is the number of hostnames a certificate can serve.
+	// MaxHostnames is the number of hostnames a certificate can serve, and
+	// so the most a hostname workflow takes.
 	MaxHostnames = 100
 	// MaxHostnameCertificates is the number of hostname certificates a
 	// zone can hold.
@@ -20,8 +21,9 @@ const (
 
 // NormalizeHostnames lowercases the hostnames and strips surrounding
 // whitespace and a trailing dot, skipping empty ones and duplicates. It
-// rejects wildcards, ports, paths, inner whitespace and more than
-// MaxHostnames hostnames.
+// rejects wildcards, ports, paths and inner whitespace. It takes any number
+// of hostnames, as a list can span zones: the hostname workflows take at
+// most MaxHostnames.
 func NormalizeHostnames(raw []string) ([]string, error) {
 	seen := map[string]bool{}
 	var hosts []string
@@ -38,9 +40,6 @@ func NormalizeHostnames(raw []string) ([]string, error) {
 			hosts = append(hosts, host)
 		}
 	}
-	if len(hosts) > MaxHostnames {
-		return nil, fmt.Errorf("%d hostnames given: a certificate can serve at most %d", len(hosts), MaxHostnames)
-	}
 	return hosts, nil
 }
 
@@ -56,9 +55,22 @@ func validHostname(host string) bool {
 	return true
 }
 
-// requireHostnames normalizes the hostnames and rejects an empty list.
-func requireHostnames(raw []string) ([]string, error) {
+// limitHostnames normalizes the hostnames and rejects more than
+// MaxHostnames.
+func limitHostnames(raw []string) ([]string, error) {
 	hosts, err := NormalizeHostnames(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(hosts) > MaxHostnames {
+		return nil, fmt.Errorf("%d hostnames given: a certificate can serve at most %d", len(hosts), MaxHostnames)
+	}
+	return hosts, nil
+}
+
+// requireHostnames is limitHostnames, rejecting an empty list too.
+func requireHostnames(raw []string) ([]string, error) {
+	hosts, err := limitHostnames(raw)
 	if err != nil {
 		return nil, err
 	}

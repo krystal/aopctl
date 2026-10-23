@@ -12,8 +12,9 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-// Options configures a Client. The zero value uses Cloudflare's API and the
-// real clock.
+// Options configures a Client or a ZoneFinder. The zero value uses
+// Cloudflare's API and the real clock. A ZoneFinder uses only HTTPClient
+// and BaseURL.
 type Options struct {
 	// HTTPClient sends the API requests. Nil means a client with a
 	// 30-second timeout.
@@ -29,7 +30,8 @@ type Options struct {
 	Wait func(ctx context.Context, d time.Duration) error
 }
 
-// Client runs the aopctl workflows against one Cloudflare zone.
+// Client runs the aopctl workflows against one Cloudflare zone. To find a
+// hostname's zone, use a ZoneFinder.
 type Client struct {
 	cf   *cfClient
 	now  func() time.Time
@@ -47,20 +49,9 @@ func NewClient(apiToken, zoneID string, opts Options) (*Client, error) {
 		return nil, errors.New("no zone ID")
 	}
 	c := &Client{
-		cf: &cfClient{
-			baseURL: opts.BaseURL,
-			token:   apiToken,
-			zoneID:  zoneID,
-			http:    opts.HTTPClient,
-		},
+		cf:   newCFClient(apiToken, zoneID, opts),
 		now:  opts.Now,
 		wait: opts.Wait,
-	}
-	if c.cf.baseURL == "" {
-		c.cf.baseURL = defaultBaseURL
-	}
-	if c.cf.http == nil {
-		c.cf.http = &http.Client{Timeout: requestTimeout}
 	}
 	if c.now == nil {
 		c.now = time.Now
@@ -69,6 +60,24 @@ func NewClient(apiToken, zoneID string, opts Options) (*Client, error) {
 		c.wait = sleep
 	}
 	return c, nil
+}
+
+// newCFClient applies the defaults of opts. zoneID is "" for requests
+// outside a zone.
+func newCFClient(apiToken, zoneID string, opts Options) *cfClient {
+	cf := &cfClient{
+		baseURL: opts.BaseURL,
+		token:   apiToken,
+		zoneID:  zoneID,
+		http:    opts.HTTPClient,
+	}
+	if cf.baseURL == "" {
+		cf.baseURL = defaultBaseURL
+	}
+	if cf.http == nil {
+		cf.http = &http.Client{Timeout: requestTimeout}
+	}
+	return cf
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

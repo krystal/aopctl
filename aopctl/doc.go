@@ -6,6 +6,10 @@
 // zone-level AOP. Zone workflows never turn zone-level AOP off, and never
 // read or change the zone's global AOP setting.
 //
+// A Client acts in one zone. When hostnames span zones, a ZoneFinder finds
+// each hostname's zone, so a caller can group the hostnames by zone and use
+// a Client for each.
+//
 // The package reads no environment variables, writes nothing to standard
 // output or standard error, and never prompts. Callers supply the inputs,
 // render plans and results, and ask for any confirmation themselves.

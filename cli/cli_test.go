@@ -27,6 +27,9 @@ import (
 	"github.com/krystal/aopctl/internal/cftest"
 )
 
+// zoneOpt is the --zone that printed commands carry for the fake's zone.
+const zoneOpt = " --zone " + cftest.Zone
+
 type testCA struct {
 	cert    *x509.Certificate
 	key     crypto.Signer
@@ -367,6 +370,8 @@ func TestCompletion(t *testing.T) {
 		{"key type", []string{"hostname", "issue", "--key-type", ""}, "ec-p256\nrsa-3072\n:4\n"},
 		{"hostnames from AOP_HOSTNAMES", []string{"hostname", "prune", "--hostname", ""}, hostA + "\n" + hostB + "\n" + hostC + "\n:4\n"},
 		{"flag value without choices", []string{"ca", "create", "--name", ""}, ":4\n"},
+		{"zone of a hostname command", []string{"hostname", "status", "--zone", ""}, ":4\n"},
+		{"zone of a zone command", []string{"zone", "status", "--zone", ""}, ":4\n"},
 		{"argument", []string{"zone", "status", ""}, ":4\n"},
 		{"subcommands", []string{"zone", ""}, "enable\tTurn on zone-level AOP\n"},
 	}
@@ -397,8 +402,8 @@ func TestMounted(t *testing.T) {
 		code, _, stderr := h.runMounted("hostname", "issue")
 		require.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
-			"To resume, run:\n  othertool aopctl hostname associate --cert-id new-1 --hostname",
-			"To roll back, run:\n  othertool aopctl hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
+			"To resume, run:\n  othertool aopctl hostname associate" + zoneOpt + " --cert-id new-1 --hostname",
+			"To roll back, run:\n  othertool aopctl hostname associate" + zoneOpt + " --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
 		} {
 			assert.Contains(t, stderr, want)
 		}

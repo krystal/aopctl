@@ -10,7 +10,8 @@ import (
 type HostnameStatusRequest struct {
 	// CACert, when set, is checked against each certificate.
 	CACert *x509.Certificate
-	// Hostnames are normalized with NormalizeHostnames, and may be empty.
+	// Hostnames are normalized with NormalizeHostnames. There may be none,
+	// and at most MaxHostnames.
 	Hostnames []string
 }
 
@@ -47,7 +48,7 @@ func (c *Client) HostnameStatus(ctx context.Context, r HostnameStatusRequest) (*
 			return nil, err
 		}
 	}
-	hosts, err := NormalizeHostnames(r.Hostnames)
+	hosts, err := limitHostnames(r.Hostnames)
 	if err != nil {
 		return nil, err
 	}

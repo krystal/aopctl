@@ -20,7 +20,8 @@ type HostnameIssueRequest struct {
 	CommonName string
 	KeyType    KeyType
 	Days       int
-	// Hostnames are normalized with NormalizeHostnames.
+	// Hostnames are normalized with NormalizeHostnames, and there must be
+	// one to MaxHostnames.
 	Hostnames []string
 	// Progress, when set, receives CertificateUploaded and
 	// AssociationRequested during Apply.

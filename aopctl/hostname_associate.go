@@ -14,7 +14,8 @@ type HostnameAssociateRequest struct {
 	// CACert must have signed the certificate.
 	CACert *x509.Certificate
 	CertID string
-	// Hostnames are normalized with NormalizeHostnames.
+	// Hostnames are normalized with NormalizeHostnames, and there must be
+	// one to MaxHostnames.
 	Hostnames []string
 }
 

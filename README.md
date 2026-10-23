@@ -167,7 +167,7 @@ aopctl completion powershell | Out-String | Invoke-Expression
 
 Completion covers commands, flags, the `--key-type` values and, for
 `--hostname`, the entries of `AOP_HOSTNAMES` when it is set. It never calls
-the Cloudflare API, so it needs no token.
+the Cloudflare API, so it needs no token, and it offers no `--zone` values.
 
 ### On Windows
 
@@ -185,17 +185,20 @@ setting them works. It contains no 1Password code, but the examples here use
 1Password's `op run`: keep `op://` references in an env file, and run each
 `hostname` and `zone` command through `op run --env-file`.
 
+Keep one env file per CA. `AOP_HOSTNAMES` lists the CA's hostnames across all
+your zones, and the `hostname` commands find each hostname's zone:
+
 ```sh
-# aop.env
+# aop-production.env
 AOP_CA_CERT=op://<vault>/<item>/ca_cert
 AOP_CA_KEY=op://<vault>/<item>/ca_key
 CLOUDFLARE_API_TOKEN=op://<vault>/<token item>/credential
-CLOUDFLARE_ZONE_ID=<zone ID>
-AOP_HOSTNAMES=app.example.com,admin.example.com
+AOP_HOSTNAMES=app.example.com,admin.example.com,app.eu.example.com,shop.example.org
 ```
 
 ```sh
-op run --env-file aop.env -- aopctl hostname status
+op run --env-file aop-production.env -- aopctl hostname status
+op run --env-file aop-production.env -- aopctl hostname issue --zone example.com
 ```
 
 | Variable               | Used by                                                                               |
@@ -203,22 +206,59 @@ op run --env-file aop.env -- aopctl hostname status
 | `AOP_CA_CERT`          | every `hostname` and `zone` command; optional for `hostname status` and `zone status` |
 | `AOP_CA_KEY`           | `hostname issue` and `zone issue`, as a PKCS#8 PEM                                    |
 | `CLOUDFLARE_API_TOKEN` | every `hostname` and `zone` command                                                   |
-| `CLOUDFLARE_ZONE_ID`   | every `hostname` and `zone` command                                                   |
+| `CLOUDFLARE_ZONE_ID`   | optional: the zone of every `hostname` and `zone` command without `--zone`            |
 | `AOP_HOSTNAMES`        | every `hostname` command, comma- or whitespace-separated                              |
 
-`AOP_HOSTNAMES` must list every hostname this CA serves in the zone.
+`AOP_HOSTNAMES` must list every hostname this CA serves, across all zones.
 Cloudflare has no API that lists all hostname associations, so `aopctl` only
 sees the hostnames you list. `--hostname` flags replace the variable. Repeat
 the flag or give it a comma-separated list, as in
 `--hostname app.example.com,admin.example.com`.
-A certificate can serve at most 100 hostnames.
+A certificate can serve at most 100 hostnames, so each zone can have at most
+100 hostnames in the list.
+
+### Choose the zone
+
+Each command acts in the first zone it finds of:
+
+1. `--zone`, which takes a zone name such as `example.com`, or a zone ID of
+   32 hex digits.
+2. `CLOUDFLARE_ZONE_ID`.
+3. For the `hostname` commands only, the zone of each hostname: the active zone
+   whose name is the longest the hostname equals or ends with. A subdomain zone
+   such as `eu.example.com` takes `app.eu.example.com` from `example.com`.
+   `aopctl` errors out if no zone matches a hostname, or if two active zones
+   have the matching name.
+
+`hostname status` reports every zone the hostnames are in, one after the other.
+`hostname issue`, `hostname associate` and `hostname prune` change one zone at
+a time: when the hostnames are in several zones, they change nothing and ask
+for `--zone`. With `--zone`, a `hostname` command acts only on the hostnames in
+that zone, skips the other `AOP_HOSTNAMES` entries, and rejects a `--hostname`
+in another zone. The `zone` commands never use the hostnames, so they need
+`--zone` or `CLOUDFLARE_ZONE_ID`.
+
+`CLOUDFLARE_ZONE_ID` works as it always has: `aopctl` treats every hostname as
+in that zone and looks nothing up, so an env file per zone keeps working. A
+`--zone` with the same ID changes nothing, so it looks nothing up either. The
+commands `aopctl` prints for you to run next, such as the prune and rollback
+commands, include `--zone` with the zone's ID.
+
+### Create the API token
 
 Create the API token with the **Zone > SSL and Certificates > Edit**
-permission for the zone. `hostname status` and `zone status` only need Read,
+permission for the zones. `hostname status` and `zone status` only need Read,
 but every other `hostname` and `zone` command writes. Cloudflare's API
 reference lists the same permission, as SSL and Certificates Read or Write, for
 the zone-level certificate and setting endpoints. Account-owned tokens work.
 They fail Cloudflare's token verify endpoint, which `aopctl` does not use.
+
+Finding a zone by name, or a hostname's zone, lists zones, which also needs
+**Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
+including subdomain zones: `aopctl` sees only the zones the token can read, so
+it would match a hostname in a zone it can't read to a parent zone, or to none.
+The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set, or when a `zone`
+command gets `--zone` as an ID.
 
 ## Commands
 
@@ -228,7 +268,7 @@ They fail Cloudflare's token verify endpoint, which `aopctl` does not use.
 | `aopctl ca show`                         | Describe the CA certificate on stdin, or print it as a Kubernetes Secret        |
 | `aopctl hostname issue`                  | Issue a leaf, upload it and point the listed hostnames at it                    |
 | `aopctl hostname associate --cert-id ID` | Point the listed hostnames at an existing leaf, to resume or roll back an issue |
-| `aopctl hostname status`                 | List the zone's hostname certificates and the listed hostnames' associations    |
+| `aopctl hostname status`                 | List each zone's hostname certificates and the listed hostnames' associations   |
 | `aopctl hostname prune --cert-id ID...`  | Delete the named certificates after checking that no listed hostname uses them  |
 | `aopctl zone issue`                      | Issue a zone-level leaf, upload it and wait for it to become active             |
 | `aopctl zone enable`                     | Turn on zone-level AOP for the newest active zone-level certificate             |
@@ -299,13 +339,13 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
    use now:
 
    ```sh
-   op run --env-file aop.env -- aopctl hostname issue --dry-run
+   op run --env-file aop-production.env -- aopctl hostname issue --zone example.com --dry-run
    ```
 
 2. Issue and roll out the new leaf:
 
    ```sh
-   op run --env-file aop.env -- aopctl hostname issue
+   op run --env-file aop-production.env -- aopctl hostname issue --zone example.com
    ```
 
    It prints the certificates the listed hostnames no longer use, and the
@@ -316,7 +356,7 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
 4. Prune the old certificates soon, with the printed command:
 
    ```sh
-   op run --env-file aop.env -- aopctl hostname prune --cert-id <old ID> --hostname <hostname>...
+   op run --env-file aop-production.env -- aopctl hostname prune --zone <zone ID> --cert-id <old ID> --hostname <hostname>...
    ```
 
    Cloudflare's documentation says that when several certificates exist, "the
@@ -342,7 +382,8 @@ ID, each hostname's original and observed association, and the commands to
 continue or undo the rollout:
 
 - To resume, run the printed
-  `aopctl hostname associate --cert-id <new ID> --hostname ...` command.
+  `aopctl hostname associate --zone <zone ID> --cert-id <new ID> --hostname ...`
+  command.
 - To roll back, run the printed `aopctl hostname associate` commands, one per
   certificate the hostnames used before, each listing only that certificate's
   hostnames.
@@ -468,14 +509,14 @@ as the `hostname` commands.
    not use it yet:
 
    ```sh
-   op run --env-file aop.env -- aopctl zone issue
+   op run --env-file aop-production.env -- aopctl zone issue --zone example.com
    ```
 
 2. Configure the origins to trust the CA, then turn zone-level AOP on:
 
    ```sh
-   op run --env-file aop.env -- aopctl zone enable --dry-run
-   op run --env-file aop.env -- aopctl zone enable
+   op run --env-file aop-production.env -- aopctl zone enable --zone example.com --dry-run
+   op run --env-file aop-production.env -- aopctl zone enable --zone example.com
    ```
 
 ### Rotate the zone-level certificate
@@ -532,6 +573,17 @@ plan, err := client.PlanHostnameIssue(ctx, aopctl.HostnameIssueRequest{
 })
 // handle err, then show the plan or ask for confirmation
 result, err := plan.Apply(ctx)
+```
+
+An `aopctl.Client` acts in one zone. When your hostnames span zones,
+`aopctl.ZoneFinder` finds each one's zone, so you can group them and use a
+client per zone:
+
+```go
+finder, err := aopctl.NewZoneFinder(apiToken, aopctl.Options{})
+// handle err
+zone, err := finder.HostnameZone(ctx, "app.eu.example.com")
+// handle err, then use zone.ID with aopctl.NewClient
 ```
 
 Each workflow that changes Cloudflare has a `Plan` method that only reads, and
