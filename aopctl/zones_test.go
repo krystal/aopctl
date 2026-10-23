@@ -281,6 +281,27 @@ func TestHostnameInZone(t *testing.T) {
 			assert.Equal(t, tt.lookups, zoneLookups(fake), "lookups")
 		})
 	}
+
+	t.Run("shared subdomain zone name", func(t *testing.T) {
+		f, fake := zoneFinder(t)
+		fake.Zones = append(fake.Zones, cftest.ZoneEntry{ID: "0123456789abcdef0123456789abcdef", Name: "eu.example.com", Status: cftest.StatusActive})
+		in, err := f.HostnameInZone(context.Background(), "a.eu.example.com", main)
+		require.NoError(t, err, "HostnameInZone")
+		assert.False(t, in, "in zone, want a hostname in either subdomain zone outside example.com")
+	})
+
+	t.Run("lookup fails", func(t *testing.T) {
+		f, fake := zoneFinder(t)
+		fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+			if r.URL.Path != "/zones" || r.URL.Query().Get("name") != "eu.example.com" {
+				return false
+			}
+			cftest.WriteAPIError(w, http.StatusInternalServerError, 1000, "internal error")
+			return true
+		}
+		_, err := f.HostnameInZone(context.Background(), "a.eu.example.com", main)
+		assert.ErrorContains(t, err, "find the zone of a.eu.example.com: list zones named eu.example.com: GET /zones: HTTP 500")
+	})
 }
 
 func TestZoneNamed(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 )
 
 // maxNameBytes is the longest zone name Cloudflare allows, and so the
-// longest hostname HostnameZone looks up. It bounds the names one lookup
-// tries.
+// longest hostname HostnameZone and HostnameInZone look up. It bounds the
+// names one lookup tries.
 const maxNameBytes = 253
 
 var zoneIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{32}$`)
@@ -29,8 +29,8 @@ type Zone struct {
 }
 
 // ZoneFinder looks up the active Cloudflare zones the API token can read:
-// by ID, by name, or as the zone a hostname is in. Looking up a name or a
-// hostname lists zones, which needs the token's Zone > Zone > Read
+// by ID, by name, or as the zone a hostname is in. ZoneNamed, HostnameZone
+// and HostnameInZone list zones, which needs the token's Zone > Zone > Read
 // permission. A zone's ID needs no lookup: pass it to NewClient.
 //
 // A ZoneFinder caches the zones it lists for each name, including names

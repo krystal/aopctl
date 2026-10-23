@@ -253,8 +253,8 @@ reference lists the same permission, as SSL and Certificates Read or Write, for
 the zone-level certificate and setting endpoints. Account-owned tokens work.
 They fail Cloudflare's token verify endpoint, which `aopctl` does not use.
 
-Finding a zone by name, or a hostname's zone, lists zones, which also needs
-**Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
+Finding a zone by name, a hostname's zone, or the hostnames in a `--zone` lists
+zones, which also needs **Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
 including subdomain zones: `aopctl` sees only the zones the token can read, so
 it would match a hostname in a zone it can't read to a parent zone, or to none.
 The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set and `--zone` is either
