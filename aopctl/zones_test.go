@@ -205,17 +205,80 @@ func TestZoneListForbidden(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f, fake := zoneFinder(t)
 			fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
-				if r.URL.Path != "/zones" {
+				if strings.Contains(r.URL.Path, "/origin_tls_client_auth") {
 					return false
 				}
 				tt.write(w)
 				return true
 			}
-			_, err := f.HostnameZone(context.Background(), "app.example.com")
-			assert.ErrorIs(t, err, aopctl.ErrZoneListForbidden)
-			assert.ErrorContains(t, err, "HTTP 403")
-			_, err = f.ZoneNamed(context.Background(), "example.com")
-			assert.ErrorIs(t, err, aopctl.ErrZoneListForbidden)
+			ctx := context.Background()
+			_, err := f.HostnameZone(ctx, "app.example.com")
+			assert.ErrorIs(t, err, aopctl.ErrZoneLookupForbidden, "HostnameZone")
+			assert.ErrorContains(t, err, "HTTP 403", "HostnameZone")
+			_, err = f.ZoneNamed(ctx, "example.com")
+			assert.ErrorIs(t, err, aopctl.ErrZoneLookupForbidden, "ZoneNamed")
+			_, err = f.Zone(ctx, euZone)
+			assert.ErrorIs(t, err, aopctl.ErrZoneLookupForbidden, "Zone")
+			_, err = f.HostnameInZone(ctx, "app.example.com", aopctl.Zone{ID: cftest.Zone, Name: "example.com"})
+			assert.ErrorIs(t, err, aopctl.ErrZoneLookupForbidden, "HostnameInZone")
+		})
+	}
+}
+
+// TestZoneListMalformed guards against a successful List Zones response
+// without a usable list passing for a name no zone has, which would let the
+// parent zone match.
+func TestZoneListMalformed(t *testing.T) {
+	for _, tt := range []struct{ name, body string }{
+		{"null result", `{"success":true,"errors":[],"messages":[],"result":null}`},
+		{"no result", `{"success":true,"errors":[],"messages":[]}`},
+		{"empty zone", `{"success":true,"errors":[],"messages":[],"result":[{}]}`},
+		{"zone without a status", `{"success":true,"errors":[],"messages":[],"result":[{"id":"` + euZone + `","name":"eu.example.com"}]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, fake := zoneFinder(t)
+			fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+				if r.URL.Path != "/zones" || r.URL.Query().Get("name") != "eu.example.com" {
+					return false
+				}
+				cftest.WriteRaw(w, http.StatusOK, "application/json", tt.body)
+				return true
+			}
+			_, err := f.HostnameZone(context.Background(), "app.eu.example.com")
+			assert.ErrorContains(t, err, "find the zone of app.eu.example.com: list zones named eu.example.com: GET /zones: HTTP 200: ")
+			assert.Equal(t, []string{"app.eu.example.com", "eu.example.com"}, zoneLookups(fake), "lookups, want none of example.com")
+		})
+	}
+}
+
+func TestHostnameInZone(t *testing.T) {
+	main := aopctl.Zone{ID: cftest.Zone, Name: "example.com"}
+	eu := aopctl.Zone{ID: euZone, Name: "eu.example.com"}
+	tests := []struct {
+		host string
+		zone aopctl.Zone
+		want bool
+		// lookups are the names looked up.
+		lookups []string
+	}{
+		{"app.example.com", main, true, []string{"app.example.com"}},
+		{"example.com", main, true, nil},
+		{"App.Example.COM.", aopctl.Zone{ID: cftest.Zone, Name: "Example.com."}, true, []string{"app.example.com"}},
+		{"a.eu.example.com", main, false, []string{"a.eu.example.com", "eu.example.com"}},
+		{"a.eu.example.com", eu, true, []string{"a.eu.example.com"}},
+		{"neu.example.com", eu, false, nil},
+		{"app.example.org", main, false, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host+" in "+tt.zone.Name, func(t *testing.T) {
+			f, fake := zoneFinder(t)
+			// Another active zone named example.com does not matter, as its
+			// name is never looked up.
+			fake.Zones = append(fake.Zones, cftest.ZoneEntry{ID: "0123456789abcdef0123456789abcdef", Name: "example.com", Status: cftest.StatusActive})
+			in, err := f.HostnameInZone(context.Background(), tt.host, tt.zone)
+			require.NoError(t, err, "HostnameInZone")
+			assert.Equal(t, tt.want, in, "in zone")
+			assert.Equal(t, tt.lookups, zoneLookups(fake), "lookups")
 		})
 	}
 }

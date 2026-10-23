@@ -34,8 +34,9 @@ type Zone struct {
 // permission. A zone's ID needs no lookup: pass it to NewClient.
 //
 // A ZoneFinder caches the zones it lists for each name, including names
-// no zone has, so it lists each name once. It does not cache a failed list.
-// It is safe for concurrent use.
+// no zone has, so it lists each name once, unless concurrent lookups of a
+// name it has not listed yet each list it. It does not cache a failed
+// list. It is safe for concurrent use.
 type ZoneFinder struct {
 	cf *cfClient
 
@@ -118,6 +119,32 @@ func (f *ZoneFinder) HostnameZone(ctx context.Context, hostname string) (Zone, e
 		}
 	}
 	return Zone{}, &ZoneMatchError{Hostname: host}
+}
+
+// HostnameInZone reports whether the hostname is in the zone: it equals or
+// ends with the zone's name, and no active zone has a longer name that it
+// equals or ends with, as a subdomain zone would. It looks up only the
+// longer names, so another active zone with the zone's own name does not
+// matter. A failed lookup fails it.
+func (f *ZoneFinder) HostnameInZone(ctx context.Context, hostname string, zone Zone) (bool, error) {
+	host, err := normalizeName(hostname)
+	if err != nil {
+		return false, err
+	}
+	zoneName := strings.TrimRight(strings.ToLower(zone.Name), ".")
+	if zoneName == "" || (host != zoneName && !strings.HasSuffix(host, "."+zoneName)) {
+		return false, nil
+	}
+	for name := host; name != zoneName; name = name[strings.IndexByte(name, '.')+1:] {
+		zones, err := f.list(ctx, name)
+		if err != nil {
+			return false, fmt.Errorf("find the zone of %s: %w", host, err)
+		}
+		if len(zones) > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // list returns the active zones named name, listing them once. Errors are

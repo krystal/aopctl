@@ -245,6 +245,19 @@ func TestZoneFilter(t *testing.T) {
 	})
 }
 
+// TestZoneIDSharedName checks that a --zone ID works for a zone whose name
+// another active zone has too, which the ambiguity error points users to.
+func TestZoneIDSharedName(t *testing.T) {
+	h, _ := lookupHarness(t)
+	h.fake.Zones = append(h.fake.Zones, cftest.ZoneEntry{ID: "0123456789abcdef0123456789abcdef", Name: "example.com", Status: cftest.StatusActive})
+	h.env["AOP_HOSTNAMES"] = hostA + "," + euA
+	code, stdout, stderr := h.run("hostname", "status", "--zone", cftest.Zone)
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.True(t, strings.HasPrefix(stdout, "Zone: example.com ("+cftest.Zone+")\n"), "stdout does not start with the zone:\n%s", stdout)
+	assert.Contains(t, stdout, hostA+": none")
+	assert.NotContains(t, stdout, euA, "stdout")
+}
+
 func TestZoneOutOfZoneHostname(t *testing.T) {
 	for _, tt := range []struct {
 		zone, host string
@@ -338,7 +351,7 @@ func TestZoneHostnameLimit(t *testing.T) {
 }
 
 func TestZoneLookupErrors(t *testing.T) {
-	const skip = "To skip the lookup, set CLOUDFLARE_ZONE_ID, or pass a zone command --zone with the zone's ID"
+	const skip = "To skip the lookup, set CLOUDFLARE_ZONE_ID to the zone's ID and pass no other --zone, or pass a zone command --zone with the zone's ID"
 	for _, tt := range []struct {
 		name  string
 		setup func(h *harness)
@@ -362,7 +375,7 @@ func TestZoneLookupErrors(t *testing.T) {
 		}, true},
 		{"ambiguous", func(h *harness) {
 			h.fake.Zones = append(h.fake.Zones, cftest.ZoneEntry{ID: "0123456789abcdef0123456789abcdef", Name: "example.com", Status: cftest.StatusActive})
-		}, []string{"hostname a.example.com matches 2 active zones named example.com: set CLOUDFLARE_ZONE_ID to the zone's ID"}, true},
+		}, []string{"hostname a.example.com matches 2 active zones named example.com: pass --zone with the zone's ID"}, true},
 		// A failed lookup of the subdomain zone must not let its parent
 		// zone match.
 		{"subdomain zone lookup fails", func(h *harness) {
@@ -375,6 +388,16 @@ func TestZoneLookupErrors(t *testing.T) {
 				return true
 			}
 		}, []string{"find the zone of a.eu.example.com: list zones named eu.example.com: GET /zones: HTTP 500"}, false},
+		{"subdomain zone lookup is malformed", func(h *harness) {
+			h.env["AOP_HOSTNAMES"] = euA
+			h.fake.Hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+				if r.URL.Path != "/zones" || r.URL.Query().Get("name") != "eu.example.com" {
+					return false
+				}
+				cftest.WriteRaw(w, http.StatusOK, "application/json", `{"success":true,"errors":[],"messages":[],"result":null}`)
+				return true
+			}
+		}, []string{"list zones named eu.example.com: GET /zones: HTTP 200: the result is not a list"}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h, _ := lookupHarness(t)
@@ -393,6 +416,18 @@ func TestZoneLookupErrors(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("403 reading the --zone ID", func(t *testing.T) {
+		h, _ := lookupHarness(t)
+		h.env["AOP_HOSTNAMES"] = euA
+		forbidZoneLookups(h, nil)
+		code, _, stderr := h.run("hostname", "status", "--zone", euZone)
+		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
+		for _, want := range []string{"read zone: ", "Zone > Zone > Read", "HTTP 403", skip} {
+			assert.Contains(t, stderr, want)
+		}
+		assert.Empty(t, aopRequests(h), "AOP requests sent")
+	})
 
 	t.Run("cancelled", func(t *testing.T) {
 		h, _ := lookupHarness(t)

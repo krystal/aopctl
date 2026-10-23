@@ -257,8 +257,8 @@ Finding a zone by name, or a hostname's zone, lists zones, which also needs
 **Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
 including subdomain zones: `aopctl` sees only the zones the token can read, so
 it would match a hostname in a zone it can't read to a parent zone, or to none.
-The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set, or when a `zone`
-command gets `--zone` as an ID.
+The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set and `--zone` is either
+absent or the same ID, or when a `zone` command gets `--zone` as an ID.
 
 ## Commands
 

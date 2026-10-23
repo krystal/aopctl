@@ -20,9 +20,9 @@ var (
 	// ErrNoActiveCertificate is returned for a zone without an active
 	// zone-level certificate, which zone-level AOP needs.
 	ErrNoActiveCertificate = errors.New("the zone has no active zone-level certificate")
-	// ErrZoneListForbidden is returned, with Cloudflare's error, when
-	// listing zones gets an HTTP 403.
-	ErrZoneListForbidden = errors.New("the API token may not list zones, which needs the Zone > Zone > Read permission")
+	// ErrZoneLookupForbidden is returned, with Cloudflare's error, when
+	// listing zones or reading one gets an HTTP 403.
+	ErrZoneLookupForbidden = errors.New("the API token may not look up zones, which needs the Zone > Zone > Read permission")
 )
 
 // ZoneMatchError reports a hostname or zone name that no active zone

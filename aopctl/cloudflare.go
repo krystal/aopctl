@@ -498,20 +498,43 @@ type zoneResult struct {
 	Status string `json:"status"`
 }
 
+// zoneList is a List Zones result. It must be a list of zones that each
+// have an ID, a name and a status, so a malformed result cannot pass for a
+// name no zone has, which would let a parent zone match.
+type zoneList []zoneResult
+
+func (l *zoneList) validate() error {
+	if *l == nil {
+		return errors.New("the result is not a list")
+	}
+	for _, z := range *l {
+		if z.ID == "" || z.Name == "" || z.Status == "" {
+			return errors.New("the list has a zone without an ID, name or status")
+		}
+	}
+	return nil
+}
+
+// zoneLookupError wraps an HTTP 403, with or without an envelope, in
+// ErrZoneLookupForbidden.
+func zoneLookupError(err error) error {
+	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.status == http.StatusForbidden {
+		return fmt.Errorf("%w: %w", ErrZoneLookupForbidden, err)
+	}
+	return err
+}
+
 // listZones returns the active zones named name. Zones of another name or
 // status, which a drifted filter could return, are skipped. A second page
 // fails the list, as only an ignored filter would need one and the zone
 // could be on a page it did not read. An HTTP 403 wraps
-// ErrZoneListForbidden.
+// ErrZoneLookupForbidden.
 func (c *cfClient) listZones(ctx context.Context, name string) ([]Zone, error) {
 	query := url.Values{"name": {name}, "status": {statusActive}, "per_page": {strconv.Itoa(zonesPerPage)}}
-	var results []zoneResult
+	var results zoneList
 	totalPages, err := c.do(ctx, http.MethodGet, zonesPath, query, nil, &results)
-	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.status == http.StatusForbidden {
-		return nil, fmt.Errorf("list zones named %s: %w: %w", name, ErrZoneListForbidden, err)
-	}
 	if err != nil {
-		return nil, fmt.Errorf("list zones named %s: %w", name, err)
+		return nil, fmt.Errorf("list zones named %s: %w", name, zoneLookupError(err))
 	}
 	if totalPages > 1 {
 		return nil, fmt.Errorf("list zones named %s: the list has %d pages, want one", name, totalPages)
@@ -533,11 +556,12 @@ func (c *cfClient) listZones(ctx context.Context, name string) ([]Zone, error) {
 	return zones, nil
 }
 
-// getZone reads the zone whose ID the client holds.
+// getZone reads the zone whose ID the client holds. An HTTP 403 wraps
+// ErrZoneLookupForbidden.
 func (c *cfClient) getZone(ctx context.Context) (*zoneResult, error) {
 	var zone zoneResult
 	if _, err := c.do(ctx, http.MethodGet, zoneDetailsPath, nil, nil, &zone); err != nil {
-		return nil, err
+		return nil, zoneLookupError(err)
 	}
 	return &zone, nil
 }

@@ -169,7 +169,7 @@ func (a *app) groupHostnames(ctx context.Context, token string, z zoneArg, hosts
 	}
 	g := zoneHosts{zone: zone}
 	for _, h := range hosts {
-		in, err := inZone(ctx, finder, zone, h)
+		in, err := finder.HostnameInZone(ctx, h, zone)
 		if err != nil {
 			return nil, lookupError(err)
 		}
@@ -181,19 +181,6 @@ func (a *app) groupHostnames(ctx context.Context, token string, z zoneArg, hosts
 		}
 	}
 	return []zoneHosts{g}, nil
-}
-
-// inZone reports whether the hostname is in the zone: it is the zone's name
-// or ends with it, and is not in a subdomain zone.
-func inZone(ctx context.Context, finder *aopctl.ZoneFinder, zone aopctl.Zone, host string) (bool, error) {
-	if host != zone.Name && !strings.HasSuffix(host, "."+zone.Name) {
-		return false, nil
-	}
-	found, err := finder.HostnameZone(ctx, host)
-	if err != nil {
-		return false, err
-	}
-	return strings.EqualFold(found.ID, zone.ID), nil
 }
 
 // writeZone returns the one zone a hostname command that writes acts in.
@@ -227,14 +214,14 @@ func printZone(w io.Writer, zone aopctl.Zone) {
 
 // lookupError says how to fix a failed zone lookup, or avoid it.
 func lookupError(err error) error {
-	if errors.Is(err, aopctl.ErrZoneListForbidden) {
-		return fmt.Errorf("%w\nTo skip the lookup, set CLOUDFLARE_ZONE_ID, or pass a zone command --zone with the zone's ID", err)
+	if errors.Is(err, aopctl.ErrZoneLookupForbidden) {
+		return fmt.Errorf("%w\nTo skip the lookup, set CLOUDFLARE_ZONE_ID to the zone's ID and pass no other --zone, or pass a zone command --zone with the zone's ID", err)
 	}
 	if e, ok := errors.AsType[*aopctl.ZoneMatchError](err); ok {
 		if e.Matches == 0 {
 			return fmt.Errorf("%w: check that CLOUDFLARE_API_TOKEN can read the zone, which needs Zone > Zone > Read", err)
 		}
-		return fmt.Errorf("%w: set CLOUDFLARE_ZONE_ID to the zone's ID", err)
+		return fmt.Errorf("%w: pass --zone with the zone's ID", err)
 	}
 	return err
 }
