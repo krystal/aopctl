@@ -96,6 +96,7 @@ func printLeaf(w io.Writer, leaf *x509.Certificate) {
 }
 
 type zoneIssueOptions struct {
+	zone    string
 	keyType string
 	days    int
 	name    string
@@ -114,6 +115,7 @@ func newZoneIssueCmd(a *app) *cobra.Command {
 			return a.zoneIssue(cmd, o)
 		},
 	}
+	zoneFlag(cmd, &o.zone, zoneZoneUsage)
 	keyTypeFlag(cmd, &o.keyType)
 	cmd.Flags().IntVar(&o.days, "days", 365, "validity in days")
 	cmd.Flags().StringVar(&o.name, "name", "aopctl AOP client", "leaf common name")
@@ -134,7 +136,11 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	cf, err := a.client()
+	requested, err := parseZoneArg(o.zone)
+	if err != nil {
+		return err
+	}
+	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
 	if err != nil {
 		return err
 	}
@@ -154,16 +160,24 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
+	zoneID, err := a.zoneCommandZone(ctx, token, requested)
+	if err != nil {
+		return err
+	}
+	cf, err := a.newClient(token, zoneID)
+	if err != nil {
+		return err
+	}
 	plan, err := cf.PlanZoneIssue(ctx, aopctl.ZoneIssueRequest{
 		CACert:     caCert,
 		CAKey:      caKey,
 		CommonName: o.name,
 		KeyType:    aopctl.KeyType(o.keyType),
 		Days:       o.days,
-		Progress:   a.progress(stderr),
+		Progress:   a.progress(stderr, zoneID),
 	})
 	if err != nil {
-		return a.cliError(err)
+		return a.cliError(err, zoneID)
 	}
 
 	zone := plan.Zone()
@@ -176,7 +190,7 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	case zone.Enabled:
 		fmt.Fprintln(stderr, "Once the new certificate is active, Cloudflare presents it to every origin without a per-hostname certificate.")
 	default:
-		fmt.Fprintf(stderr, "Zone-level AOP is disabled, so Cloudflare does not use the new certificate until you run %s zone enable.\n", a.commandPath())
+		fmt.Fprintf(stderr, "Zone-level AOP is disabled, so Cloudflare does not use the new certificate until you run %s.\n", a.zoneCmd(zoneID, "zone enable"))
 	}
 	if o.dryRun {
 		fmt.Fprintln(stderr, "Dry run: nothing changed.")
@@ -198,18 +212,18 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 		if rolloutErr.Enabled {
 			fmt.Fprint(stderr, " Zone-level AOP is enabled, so Cloudflare uses it if it becomes active later.")
 		}
-		fmt.Fprintf(stderr, "\nTo remove it, run:\n  %s zone prune --cert-id %s\n", a.commandPath(), rolloutErr.CertID)
+		fmt.Fprintf(stderr, "\nTo remove it, run:\n  %s --cert-id %s\n", a.zoneCmd(zoneID, "zone prune"), rolloutErr.CertID)
 		return err
 	}
 	if _, ok := errors.AsType[*aopctl.UploadUnknownError](err); ok {
-		return fmt.Errorf("%w, so run %s zone status before retrying", err, a.commandPath())
+		return fmt.Errorf("%w, so run %s before retrying", err, a.zoneCmd(zoneID, "zone status"))
 	}
 	if err != nil {
-		return a.cliError(err)
+		return a.cliError(err, zoneID)
 	}
 
 	if !zone.Enabled {
-		fmt.Fprintf(stdout, "Certificate %s is active. Zone-level AOP is disabled, so Cloudflare does not use it yet. To enable it, run:\n  %s zone enable\n", result.CertID, a.commandPath())
+		fmt.Fprintf(stdout, "Certificate %s is active. Zone-level AOP is disabled, so Cloudflare does not use it yet. To enable it, run:\n  %s\n", result.CertID, a.zoneCmd(zoneID, "zone enable"))
 		return nil
 	}
 	fmt.Fprintf(stdout, "Certificate %s is active, and Cloudflare now uses it as the newest active certificate.\n", result.CertID)
@@ -232,16 +246,17 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	fmt.Fprintf(stdout, "Cloudflare no longer uses: %s\n", strings.Join(result.Superseded, ", "))
 	fmt.Fprintln(stdout, "Once requests through Cloudflare pass, delete those:")
 	if len(ownIDs) > 0 {
-		fmt.Fprintf(stdout, "  %s zone prune --cert-id %s\n", a.commandPath(), strings.Join(ownIDs, " --cert-id "))
+		fmt.Fprintf(stdout, "  %s --cert-id %s\n", a.zoneCmd(zoneID, "zone prune"), strings.Join(ownIDs, " --cert-id "))
 	}
 	if len(otherIDs) > 0 {
 		fmt.Fprintf(stdout, "  %s\n", otherCANote(otherIDs))
-		fmt.Fprintf(stdout, "  %s zone prune --cert-id %s\n", a.commandPath(), strings.Join(otherIDs, " --cert-id "))
+		fmt.Fprintf(stdout, "  %s --cert-id %s\n", a.zoneCmd(zoneID, "zone prune"), strings.Join(otherIDs, " --cert-id "))
 	}
 	return nil
 }
 
 type zoneEnableOptions struct {
+	zone    string
 	yes     bool
 	dryRun  bool
 	timeout time.Duration
@@ -257,6 +272,7 @@ func newZoneEnableCmd(a *app) *cobra.Command {
 			return a.zoneEnable(cmd, o)
 		},
 	}
+	zoneFlag(cmd, &o.zone, zoneZoneUsage)
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "enable without asking for confirmation")
 	dryRunFlag(cmd, &o.dryRun, "show the plan without changing anything")
 	timeoutFlag(cmd, &o.timeout)
@@ -268,7 +284,11 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	cf, err := a.client()
+	requested, err := parseZoneArg(o.zone)
+	if err != nil {
+		return err
+	}
+	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
 	if err != nil {
 		return err
 	}
@@ -284,12 +304,20 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
+	zoneID, err := a.zoneCommandZone(ctx, token, requested)
+	if err != nil {
+		return err
+	}
+	cf, err := a.newClient(token, zoneID)
+	if err != nil {
+		return err
+	}
 	plan, err := cf.PlanZoneEnable(ctx, aopctl.ZoneEnableRequest{CACert: caCert})
 	if errors.Is(err, aopctl.ErrNoActiveCertificate) {
-		return fmt.Errorf("%w: upload one with %s zone issue", err, a.commandPath())
+		return fmt.Errorf("%w: upload one with %s", err, a.zoneCmd(zoneID, "zone issue"))
 	}
 	if err != nil {
-		return a.cliError(err)
+		return a.cliError(err, zoneID)
 	}
 	zone := plan.Zone()
 	if zone.Enabled {
@@ -316,29 +344,40 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 
 	err = plan.Apply(ctx)
 	if _, ok := errors.AsType[*aopctl.EnableUnknownError](err); ok {
-		return fmt.Errorf("%w: check it with %s zone status before retrying", err, a.commandPath())
+		return fmt.Errorf("%w: check it with %s before retrying", err, a.zoneCmd(zoneID, "zone status"))
 	}
 	if err != nil {
-		return a.cliError(err)
+		return a.cliError(err, zoneID)
 	}
 	fmt.Fprintf(stdout, "Zone-level AOP is enabled, and Cloudflare presents certificate %s.\n%s\n", newest.ID, zoneDisableHint)
 	return nil
 }
 
+type zoneStatusOptions struct {
+	zone string
+}
+
 func newZoneStatusCmd(a *app) *cobra.Command {
-	return &cobra.Command{
+	o := &zoneStatusOptions{}
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the zone-level AOP setting and certificates",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.zoneStatus(cmd)
+			return a.zoneStatus(cmd, o)
 		},
 	}
+	zoneFlag(cmd, &o.zone, zoneZoneUsage)
+	return cmd
 }
 
-func (a *app) zoneStatus(cmd *cobra.Command) error {
+func (a *app) zoneStatus(cmd *cobra.Command, o *zoneStatusOptions) error {
 	stdout := cmd.OutOrStdout()
-	cf, err := a.client()
+	requested, err := parseZoneArg(o.zone)
+	if err != nil {
+		return err
+	}
+	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
 	if err != nil {
 		return err
 	}
@@ -349,6 +388,14 @@ func (a *app) zoneStatus(cmd *cobra.Command) error {
 		}
 	}
 
+	zoneID, err := a.zoneCommandZone(cmd.Context(), token, requested)
+	if err != nil {
+		return err
+	}
+	cf, err := a.newClient(token, zoneID)
+	if err != nil {
+		return err
+	}
 	report, err := cf.ZoneStatus(cmd.Context(), aopctl.ZoneStatusRequest{CACert: caCert})
 	if err != nil {
 		return err
@@ -385,13 +432,14 @@ func (a *app) zoneStatus(cmd *cobra.Command) error {
 	}
 	fmt.Fprintf(stdout, "In use: %s\n", describeInUse(report))
 	if active > 1 {
-		fmt.Fprintf(stdout, "Warning: %d certificates are active. Cloudflare uses the most recently deployed one, so delete the others with %s zone prune.\n", active, a.commandPath())
+		fmt.Fprintf(stdout, "Warning: %d certificates are active. Cloudflare uses the most recently deployed one, so delete the others with %s.\n", active, a.zoneCmd(zoneID, "zone prune"))
 	}
-	fmt.Fprintf(stdout, "Per-hostname certificates override zone-level ones for their hostnames, so see %s hostname status too.\n", a.commandPath())
+	fmt.Fprintf(stdout, "Per-hostname certificates override zone-level ones for their hostnames, so see %s too.\n", a.zoneCmd(zoneID, "hostname status"))
 	return nil
 }
 
 type zonePruneOptions struct {
+	zone    string
 	certIDs []string
 	yes     bool
 	dryRun  bool
@@ -408,6 +456,7 @@ func newZonePruneCmd(a *app) *cobra.Command {
 			return a.zonePrune(cmd, o)
 		},
 	}
+	zoneFlag(cmd, &o.zone, zoneZoneUsage)
 	cmd.Flags().StringArrayVar(&o.certIDs, "cert-id", nil, "zone certificate to delete (repeatable, required). While zone-level AOP is enabled, naming every active certificate keeps the newest, which may change the certificate in use")
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "delete without asking for confirmation")
 	dryRunFlag(cmd, &o.dryRun, "show the plan without changing anything, and exit 1 if it refuses or keeps a named certificate")
@@ -417,6 +466,10 @@ func newZonePruneCmd(a *app) *cobra.Command {
 
 func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 	stderr := cmd.ErrOrStderr()
+	requested, err := parseZoneArg(o.zone)
+	if err != nil {
+		return err
+	}
 	var ids []string
 	seen := map[string]bool{}
 	for _, id := range o.certIDs {
@@ -430,12 +483,12 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 		}
 	}
 	if len(ids) == 0 {
-		return usagef("--cert-id is required: run %s zone status to find certificates Cloudflare no longer uses", a.commandPath())
+		return usagef("--cert-id is required: run %s zone status%s to find certificates Cloudflare no longer uses", a.commandPath(), a.zoneHint(requested))
 	}
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	cf, err := a.client()
+	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
 	if err != nil {
 		return err
 	}
@@ -451,9 +504,17 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	plan, err := cf.PlanZonePrune(ctx, aopctl.ZonePruneRequest{CACert: caCert, CertIDs: ids, Progress: a.progress(stderr)})
+	zoneID, err := a.zoneCommandZone(ctx, token, requested)
 	if err != nil {
-		return a.cliError(err)
+		return err
+	}
+	cf, err := a.newClient(token, zoneID)
+	if err != nil {
+		return err
+	}
+	plan, err := cf.PlanZonePrune(ctx, aopctl.ZonePruneRequest{CACert: caCert, CertIDs: ids, Progress: a.progress(stderr, zoneID)})
+	if err != nil {
+		return a.cliError(err, zoneID)
 	}
 	failed := false
 	for _, s := range plan.Skipped() {

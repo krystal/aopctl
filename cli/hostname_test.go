@@ -133,7 +133,7 @@ func TestHostnameIssue(t *testing.T) {
 
 	for _, want := range []string{
 		"They no longer use: old-1, old-2",
-		"aopctl hostname prune --cert-id old-1 --cert-id old-2 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
+		"aopctl hostname prune" + zoneOpt + " --cert-id old-1 --cert-id old-2 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
 	} {
 		assert.Contains(t, stdout, want)
 	}
@@ -163,7 +163,7 @@ func TestHostnameIssueFailures(t *testing.T) {
 		code, _, stderr := h.run("hostname", "issue")
 		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stderr, "upload outcome unknown")
-		assert.Contains(t, stderr, "aopctl hostname status before retrying")
+		assert.Contains(t, stderr, "aopctl hostname status"+zoneOpt+" before retrying")
 		assert.NotContains(t, stderr, "To resume", "printed recovery commands without a certificate ID")
 		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
@@ -196,7 +196,7 @@ func TestHostnameIssueFailures(t *testing.T) {
 		code, _, stderr := h.run("hostname", "issue")
 		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stderr, "upload outcome unknown")
-		assert.Contains(t, stderr, "aopctl hostname status before retrying")
+		assert.Contains(t, stderr, "aopctl hostname status"+zoneOpt+" before retrying")
 		assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 	})
 
@@ -238,7 +238,7 @@ func TestHostnameIssueFailures(t *testing.T) {
 			code, _, stderr := h.run("hostname", "issue")
 			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 			assert.Contains(t, stderr, "upload outcome unknown")
-			assert.Contains(t, stderr, "aopctl hostname status before retrying")
+			assert.Contains(t, stderr, "aopctl hostname status"+zoneOpt+" before retrying")
 			assert.Zero(t, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		})
 	}
@@ -270,13 +270,13 @@ func TestHostnameIssueFailures(t *testing.T) {
 		for _, want := range []string{
 			"No hostname was changed.",
 			"If certificate new-1 becomes active later",
-			"aopctl hostname associate --cert-id new-1" + hosts,
-			"aopctl hostname prune --cert-id new-1" + hosts,
+			"aopctl hostname associate" + zoneOpt + " --cert-id new-1" + hosts,
+			"aopctl hostname prune" + zoneOpt + " --cert-id new-1" + hosts,
 		} {
 			assert.Contains(t, stderr, want)
 		}
 
-		prune := commandLines(stderr, "aopctl hostname prune --cert-id new-1")
+		prune := commandLines(stderr, "aopctl hostname prune"+zoneOpt+" --cert-id new-1")
 		require.Len(t, prune, 1, "prune commands")
 		h.openTTY = func() (io.ReadWriteCloser, error) { return &fakeTTY{Reader: strings.NewReader("y\n")}, nil }
 		code, _, stderr = h.run(prune[0]...)
@@ -299,9 +299,9 @@ func TestHostnameIssueFailures(t *testing.T) {
 		assert.Equal(t, 1, h.fake.Count(http.MethodPut, "/hostnames"), "PUTs")
 		for _, want := range []string{
 			"New certificate: new-1",
-			"aopctl hostname associate --cert-id new-1 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
-			"aopctl hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
-			"aopctl hostname associate --cert-id old-2 --hostname c.example.com",
+			"aopctl hostname associate" + zoneOpt + " --cert-id new-1 --hostname a.example.com --hostname b.example.com --hostname c.example.com --hostname d.example.com",
+			"aopctl hostname associate" + zoneOpt + " --cert-id old-1 --hostname a.example.com --hostname b.example.com",
+			"aopctl hostname associate" + zoneOpt + " --cert-id old-2 --hostname c.example.com",
 		} {
 			assert.Contains(t, stderr, want)
 		}
@@ -591,7 +591,7 @@ func TestHostnameIssueLastSlotRecovery(t *testing.T) {
 	}
 	code, _, stderr := h.run("hostname", "issue")
 	require.Equal(t, 1, code, "issue: exit code; stderr:\n%s", stderr)
-	resume := commandLines(stderr, "aopctl hostname associate --cert-id new-1")
+	resume := commandLines(stderr, "aopctl hostname associate"+zoneOpt+" --cert-id new-1")
 	require.Len(t, resume, 1, "resume commands")
 
 	h.fake.Hook = nil
@@ -628,14 +628,14 @@ func TestHostnameIssueRollbackOutput(t *testing.T) {
 	} {
 		assert.Contains(t, stderr, want)
 	}
-	rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-")
+	rollback := commandLines(stderr, "aopctl hostname associate"+zoneOpt+" --cert-id old-")
 	got := make([]string, len(rollback))
 	for i, args := range rollback {
 		got[i] = strings.Join(args, " ")
 	}
 	want := []string{
-		"hostname associate --cert-id old-1 --hostname a.example.com --hostname b.example.com",
-		"hostname associate --cert-id old-2 --hostname c.example.com",
+		"hostname associate" + zoneOpt + " --cert-id old-1 --hostname a.example.com --hostname b.example.com",
+		"hostname associate" + zoneOpt + " --cert-id old-2 --hostname c.example.com",
 	}
 	require.Equal(t, want, got, "rollback commands")
 
@@ -679,7 +679,7 @@ func TestHostnameIssueOtherCA(t *testing.T) {
 		assert.Contains(t, stderr, "AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did",
 			"rollback lacks the other-CA note for old-1")
 		assert.NotContains(t, stderr, "did not sign cur-1", "rollback has an other-CA note for cur-1")
-		rollback := commandLines(stderr, "aopctl hostname associate --cert-id old-1")
+		rollback := commandLines(stderr, "aopctl hostname associate"+zoneOpt+" --cert-id old-1")
 		require.Len(t, rollback, 1, "rollback commands for old-1")
 
 		h.fake.Hook = nil
@@ -699,9 +699,9 @@ func TestHostnameIssueOtherCA(t *testing.T) {
 		code, stdout, stderr := h.run("hostname", "issue")
 		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		for _, want := range []string{
-			"aopctl hostname prune --cert-id cur-1 --hostname a.example.com --hostname b.example.com\n",
+			"aopctl hostname prune" + zoneOpt + " --cert-id cur-1 --hostname a.example.com --hostname b.example.com\n",
 			"AOP_CA_CERT did not sign old-1, so run the next command with AOP_CA_CERT set to the CA that did",
-			"aopctl hostname prune --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
+			"aopctl hostname prune" + zoneOpt + " --cert-id old-1 --hostname a.example.com --hostname b.example.com\n",
 		} {
 			assert.Contains(t, stdout, want)
 		}

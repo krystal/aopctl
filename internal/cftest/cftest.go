@@ -1,7 +1,7 @@
-// Package cftest is a stateful fake of Cloudflare's hostname and zone AOP API, with
-// helpers for tests of the aopctl library and command. It does not import
-// the library, so the fake's wire details are checked independently of the
-// client's.
+// Package cftest is a stateful fake of Cloudflare's hostname and zone AOP API,
+// and of the zone endpoints that find a zone, with helpers for tests of the
+// aopctl library and command. It does not import the library, so the fake's
+// wire details are checked independently of the client's.
 package cftest
 
 import (
@@ -34,8 +34,11 @@ import (
 // would leave "-suffix7" behind.
 var Token = strings.Repeat("A", 32) + "-suffix7"
 
-// Zone is the fake's zone ID.
-const Zone = "023e105f4ecef8ad9ca31a8372d0c353"
+// Zone is the ID of the fake's zone, and ZoneName its name.
+const (
+	Zone     = "023e105f4ecef8ad9ca31a8372d0c353"
+	ZoneName = "example.com"
+)
 
 // Certificate and association statuses.
 const (
@@ -49,7 +52,8 @@ const (
 // CodeNoAssociation comes with a 404 for a hostname without an association.
 const CodeNoAssociation = 1553
 
-// Fake is a stateful fake of Cloudflare's hostname and zone AOP API.
+// Fake is a stateful fake of Cloudflare's hostname and zone AOP API. Its
+// fields hold the AOP state of the zone Zone, and AddZone adds others.
 type Fake struct {
 	Mu       sync.Mutex
 	Certs    []*Cert
@@ -71,9 +75,22 @@ type Fake struct {
 	DeleteStatuses []string
 	AssocStatuses  []string
 
-	// Hook runs with Mu held before the default handling. Returning true
-	// means it wrote the response.
+	// Zones are the zones List Zones and Zone Details return. New adds
+	// Zone, named ZoneName and active.
+	Zones []ZoneEntry
+	// others holds the AOP state of the zones AddZone added.
+	others map[string]*Fake
+
+	// Hook runs for every request with the token, with Mu held, before the
+	// default handling. Returning true means it wrote the response.
 	Hook func(w http.ResponseWriter, r *http.Request, body []byte) bool
+}
+
+// ZoneEntry is a zone as List Zones and Zone Details return it.
+type ZoneEntry struct {
+	ID     string
+	Name   string
+	Status string
 }
 
 // Cert is a hostname or zone certificate in the fake.
@@ -103,16 +120,35 @@ type Request struct {
 // New starts a fake that the test's cleanup stops.
 func New(t *testing.T) (*Fake, *httptest.Server) {
 	t.Helper()
-	f := &Fake{
+	f := newFake()
+	f.Zones = []ZoneEntry{{ID: Zone, Name: ZoneName, Status: StatusActive}}
+	f.others = map[string]*Fake{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return f, srv
+}
+
+// newFake returns the AOP state of an empty zone.
+func newFake() *Fake {
+	return &Fake{
 		Assocs:         map[string]*Assoc{},
 		PerPage:        50,
 		UploadStatuses: []string{"pending_deployment", StatusActive},
 		DeleteStatuses: []string{StatusPendingDeletion, "gone"},
 		AssocStatuses:  []string{"pending_deployment", StatusActive},
 	}
-	srv := httptest.NewServer(f)
-	t.Cleanup(srv.Close)
-	return f, srv
+}
+
+// AddZone adds an active zone and returns a fake holding its AOP state,
+// which the helpers such as AddCert and SetAssoc set up. f records its
+// requests and runs Hook for them.
+func (f *Fake) AddZone(id, name string) *Fake {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	z := newFake()
+	f.Zones = append(f.Zones, ZoneEntry{ID: id, Name: name, Status: StatusActive})
+	f.others[id] = z
+	return z
 }
 
 // next returns the current status and advances to the next one.
@@ -303,15 +339,38 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteAPIError(w, http.StatusForbidden, 10000, "Authentication error")
 		return
 	}
-	rest, ok := strings.CutPrefix(r.URL.Path, "/zones/"+Zone+"/origin_tls_client_auth")
-	if !ok {
-		WriteAPIError(w, http.StatusNotFound, 7003, "Could not route")
-		return
-	}
 	if f.Hook != nil && f.Hook(w, r, body) {
 		return
 	}
-	rest, ok = strings.CutPrefix(rest, "/hostnames")
+	if r.URL.Path == "/zones" && r.Method == http.MethodGet {
+		f.listZones(w, r)
+		return
+	}
+	id, sub, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/zones/"), "/")
+	if !ok && strings.HasPrefix(r.URL.Path, "/zones/") {
+		f.zoneDetails(w, r, id)
+		return
+	}
+	zone := f
+	if id != Zone {
+		zone = f.others[id]
+	}
+	rest, ok := strings.CutPrefix("/"+sub, "/origin_tls_client_auth")
+	if zone == nil || !ok {
+		WriteAPIError(w, http.StatusNotFound, 7003, "Could not route")
+		return
+	}
+	if zone != f {
+		zone.Mu.Lock()
+		defer zone.Mu.Unlock()
+	}
+	zone.serveAOP(w, r, body, rest)
+}
+
+// serveAOP routes the AOP endpoints of the zone, with rest following
+// origin_tls_client_auth.
+func (f *Fake) serveAOP(w http.ResponseWriter, r *http.Request, body []byte, rest string) {
+	rest, ok := strings.CutPrefix(rest, "/hostnames")
 	if !ok {
 		f.zone(w, r, body, rest)
 		return
@@ -361,18 +420,65 @@ func (f *Fake) zone(w http.ResponseWriter, r *http.Request, body []byte, rest st
 }
 
 func (f *Fake) list(w http.ResponseWriter, r *http.Request, certs []*Cert) {
+	writePage(w, r, certs, f.PerPage, func(c *Cert) any { return certJSON(c, c.Statuses[0]) })
+}
+
+// writePage writes the page of items that the request's page parameter
+// names, perPage to a page, with Cloudflare's result_info.
+func writePage[T any](w http.ResponseWriter, r *http.Request, items []T, perPage int, encode func(T) any) {
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
 		page = 1
 	}
-	totalPages := (len(certs) + f.PerPage - 1) / f.PerPage
+	totalPages := (len(items) + perPage - 1) / perPage
 	result := []any{}
-	for i := (page - 1) * f.PerPage; i < len(certs) && i < page*f.PerPage; i++ {
-		result = append(result, certJSON(certs[i], certs[i].Statuses[0]))
+	for i := (page - 1) * perPage; i < len(items) && i < page*perPage; i++ {
+		result = append(result, encode(items[i]))
 	}
 	WriteEnvelope(w, http.StatusOK, result, map[string]any{"result_info": map[string]any{
-		"page": page, "per_page": f.PerPage, "total_pages": totalPages, "count": len(result), "total_count": len(certs),
+		"page": page, "per_page": perPage, "total_pages": totalPages, "count": len(result), "total_count": len(items),
 	}})
+}
+
+func zoneJSON(z ZoneEntry) any {
+	return map[string]any{"id": z.ID, "name": z.Name, "status": z.Status, "type": "full", "paused": false}
+}
+
+// listZones answers List Zones. It matches the name filter exactly, in
+// either case, and the status filter, and pages 20 zones at a time unless
+// per_page says otherwise.
+func (f *Fake) listZones(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var zones []ZoneEntry
+	for _, z := range f.Zones {
+		if name := q.Get("name"); name != "" && !strings.EqualFold(z.Name, name) {
+			continue
+		}
+		if status := q.Get("status"); status != "" && z.Status != status {
+			continue
+		}
+		zones = append(zones, z)
+	}
+	perPage, err := strconv.Atoi(q.Get("per_page"))
+	if err != nil || perPage < 5 || perPage > 50 {
+		perPage = 20
+	}
+	writePage(w, r, zones, perPage, zoneJSON)
+}
+
+// zoneDetails answers Zone Details.
+func (f *Fake) zoneDetails(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		WriteAPIError(w, http.StatusMethodNotAllowed, 10405, "Method not allowed")
+		return
+	}
+	for _, z := range f.Zones {
+		if z.ID == id {
+			WriteEnvelope(w, http.StatusOK, zoneJSON(z), nil)
+			return
+		}
+	}
+	WriteAPIError(w, http.StatusNotFound, 7003, "Could not route")
 }
 
 // Upload handles an upload request body, as a POST does. Call it with Mu

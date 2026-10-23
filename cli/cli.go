@@ -37,10 +37,13 @@ Secrets come from environment variables, for example through
 Environment:
   AOP_CA_CERT           CA certificate PEM
   AOP_CA_KEY            CA private key PEM (PKCS#8), for hostname and zone issue
-  CLOUDFLARE_API_TOKEN  Zone > SSL and Certificates > Edit
-  CLOUDFLARE_ZONE_ID    the zone's ID
-  AOP_HOSTNAMES         hostnames this CA serves, comma- or space-separated,
-                        for the hostname commands`
+  CLOUDFLARE_API_TOKEN  Zone > SSL and Certificates > Edit, and Zone > Zone >
+                        Read to look up zones
+  CLOUDFLARE_ZONE_ID    the zone's ID, optional: --zone takes precedence, and
+                        without either, hostname commands look up each
+                        hostname's zone
+  AOP_HOSTNAMES         hostnames this CA serves across all zones, comma- or
+                        space-separated, for the hostname commands`
 
 // modulePath is the module whose version aopctl reports.
 const modulePath = "github.com/krystal/aopctl"
@@ -372,16 +375,4 @@ func (a *app) requireEnv(name string) (string, error) {
 		return "", fmt.Errorf("%s is not set", name)
 	}
 	return v, nil
-}
-
-func (a *app) client() (*aopctl.Client, error) {
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
-	if err != nil {
-		return nil, err
-	}
-	zoneID, err := a.requireEnv("CLOUDFLARE_ZONE_ID")
-	if err != nil {
-		return nil, err
-	}
-	return aopctl.NewClient(token, zoneID, aopctl.Options{BaseURL: a.baseURL, Now: a.now, Wait: a.wait})
 }
