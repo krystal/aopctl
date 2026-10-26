@@ -325,7 +325,7 @@ env file per zone keeps working. A `--zone` with the same ID changes nothing,
 so it looks nothing up either. A `--zone` replaces a configured zone ID that
 is a reference without reading it. The commands `aopctl` prints for you to
 run next, such as the prune and rollback commands, include `--zone` with the
-zone's ID.
+zone's ID, unless it was read from a reference, which they find again.
 
 ### Create the API token
 
@@ -340,7 +340,7 @@ Finding a zone by name, a hostname's zone, or the hostnames in a `--zone` lists
 zones, which also needs **Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
 including subdomain zones: `aopctl` sees only the zones the token can read, so
 it would match a hostname in a zone it can't read to a parent zone, or to none.
-The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set and `--zone` is either
+The lookup isn't needed when a zone ID is configured and `--zone` is either
 absent or the same ID, or when a `zone` command gets `--zone` as an ID.
 
 ## Commands
@@ -380,9 +380,9 @@ Pin the fingerprint in the plugin's `clientCertFingerprints`. The plugin
 README explains when to [pin the CA or the client certificate][plugin-pin].
 
 `aopctl ca show` describes the CA certificate on stdin or, when stdin is a
-terminal or empty, as `/dev/null` is, the configured one. An empty pipe is an
-error rather than a fallback, because the command piping into `ca show`, such
-as `op read`, likely failed. It prints the fingerprint to pin, the
+terminal or an empty file or device, such as `/dev/null`, the configured one.
+An empty pipe is an error rather than a fallback, because the command piping
+into `ca show`, such as `op read`, likely failed. It prints the fingerprint to pin, the
 validity and the key type, and warns when the certificate does not match the
 CA profile. With `--secret` it prints only the Secret:
 
@@ -645,7 +645,11 @@ set, `aopctl` reads a config file only when `--config` or `AOPCTL_CONFIG`
 names one, so a config file at the default path can't override the values
 the tool supplies. `Resolve` replaces the 1Password CLI for `op://`
 references, for example with the 1Password SDK. `aopctl` prints the errors
-it returns, so keep secrets out of them. Build a new command with
+it returns, so keep secrets out of them. `aopctl`'s `--config` and
+`--profile` flags would replace a tool's own persistent flags of the same
+names under it, so a tool that has them sets `NoConfigFlags`, and
+`AOPCTL_CONFIG` and `AOPCTL_PROFILE` select the file and profile instead.
+Build a new command with
 `cli.NewCommand` for each run, because cobra keeps flag values such as
 `--yes` between runs.
 

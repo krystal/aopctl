@@ -52,8 +52,12 @@ func (a *app) completeHostnames(*cobra.Command, []string, string) ([]cobra.Compl
 // hostnames returns the --hostname flags, or the configured hostnames when
 // no flag is given, normalized and deduplicated. flags is nil only when no
 // flag is given: --hostname "" sets it to an empty list, which must not
-// fall back to the configured hostnames.
-func (a *app) hostnames(flags []string) ([]string, error) {
+// fall back to the configured hostnames. It reads the config for cmd, which
+// prints the config file's warnings first.
+func (a *app) hostnames(cmd *cobra.Command, flags []string) ([]string, error) {
+	if _, err := a.commandConfig(cmd); err != nil {
+		return nil, err
+	}
 	entries := flags
 	if entries == nil {
 		var err error
@@ -210,7 +214,7 @@ func (a *app) hostnameIssue(cmd *cobra.Command, o *hostnameIssueOptions) error {
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
@@ -422,7 +426,7 @@ func (a *app) hostnameAssociate(cmd *cobra.Command, o *hostnameAssociateOptions)
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
@@ -508,7 +512,7 @@ func (a *app) hostnameStatus(cmd *cobra.Command, o *hostnameStatusOptions) error
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
@@ -670,7 +674,7 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}

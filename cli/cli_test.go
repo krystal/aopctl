@@ -74,7 +74,7 @@ type harness struct {
 	stdin     string
 	stdoutTTY bool
 	stdinTTY  bool
-	stdinPipe bool
+	stdinFile bool
 	openTTY   func() (io.ReadWriteCloser, error)
 	now       time.Time
 
@@ -160,7 +160,7 @@ func (h *harness) app() *app {
 		},
 		stdoutIsTerminal: func(io.Writer) bool { return h.stdoutTTY },
 		stdinIsTerminal:  func(io.Reader) bool { return h.stdinTTY },
-		stdinIsPipe:      func(io.Reader) bool { return h.stdinPipe },
+		stdinIsFile:      func(io.Reader) bool { return h.stdinFile },
 		openTTY:          h.openTTY,
 		baseURL:          h.srv.URL,
 		wait: func(ctx context.Context, _ time.Duration) error {
@@ -626,7 +626,7 @@ func TestHostnames(t *testing.T) {
 				}
 				return ""
 			}}
-			got, err := a.hostnames(tt.flags)
+			got, err := a.hostnames(&cobra.Command{}, tt.flags)
 			if tt.err {
 				var usageErr *usageError
 				require.ErrorAs(t, err, &usageErr)

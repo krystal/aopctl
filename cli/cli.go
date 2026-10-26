@@ -90,6 +90,12 @@ type Options struct {
 	// starts with "op://". Nil means the 1Password CLI, op. aopctl prints
 	// the errors it returns, so they must not hold secrets.
 	Resolve func(ctx context.Context, ref string) (string, error)
+
+	// NoConfigFlags leaves out aopctl's --config and --profile flags, for a
+	// command that mounts aopctl and has persistent flags with those names,
+	// which aopctl's would otherwise replace under it. AOPCTL_CONFIG and
+	// AOPCTL_PROFILE then select the config file and profile.
+	NoConfigFlags bool
 }
 
 // NewCommand returns the aopctl command. Add it to another cobra command to
@@ -185,9 +191,11 @@ type app struct {
 	// default config file.
 	configDir func() (string, error)
 
-	// configFlag and profileFlag are --config and --profile.
-	configFlag  string
-	profileFlag string
+	// configFlag and profileFlag are --config and --profile, unless
+	// noConfigFlags leaves the flags out.
+	configFlag    string
+	profileFlag   string
+	noConfigFlags bool
 
 	// The config file and config, read once, and whether a command
 	// printed the config file's warnings and the token note.
@@ -198,12 +206,17 @@ type app struct {
 	cfgErr     error
 	warned     bool
 	tokenNoted bool
+	// zoneFromReference is the configured zone ID when it was read from a
+	// reference, which printed commands leave out.
+	zoneFromReference string
 
 	// stdoutIsTerminal and stdinIsTerminal check the command's output and
-	// input, and stdinIsPipe whether its input is a pipe.
+	// input, and stdinIsFile whether its input is a regular file or a
+	// device such as os.DevNull, which can be empty without anything
+	// having failed, unlike a pipe.
 	stdoutIsTerminal func(io.Writer) bool
 	stdinIsTerminal  func(io.Reader) bool
-	stdinIsPipe      func(io.Reader) bool
+	stdinIsFile      func(io.Reader) bool
 	// openTTY opens the terminal for confirmation prompts: the controlling
 	// terminal, or the console on Windows. Either works under op run
 	// whatever stdin and stdout are.
@@ -236,9 +249,10 @@ func newApp(opts Options) *app {
 		getenv:           getenv,
 		resolve:          resolve,
 		configDir:        configDir,
+		noConfigFlags:    opts.NoConfigFlags,
 		stdoutIsTerminal: func(w io.Writer) bool { return isTerminal(w) },
 		stdinIsTerminal:  func(r io.Reader) bool { return isTerminal(r) },
-		stdinIsPipe:      func(r io.Reader) bool { return isPipe(r) },
+		stdinIsFile:      func(r io.Reader) bool { return isFile(r) },
 		openTTY:          openTerminal,
 		now:              time.Now,
 		version:          resolveVersion(opts.Version, debug.ReadBuildInfo),
@@ -286,14 +300,15 @@ func isTerminal(v any) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// isPipe reports whether v is a pipe. Only an *os.File can be one.
-func isPipe(v any) bool {
+// isFile reports whether v is a regular file or a character device, such
+// as os.DevNull. Only an *os.File can be one.
+func isFile(v any) bool {
 	f, ok := v.(*os.File)
 	if !ok {
 		return false
 	}
 	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeNamedPipe != 0
+	return err == nil && (info.Mode().IsRegular() || info.Mode()&os.ModeCharDevice != 0)
 }
 
 // commandPath is how printed commands start: "aopctl", or the full path
@@ -313,10 +328,9 @@ func newRootCmd(a *app) *cobra.Command {
 		RunE:    helpUsage,
 	}
 	a.root = cmd
-	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default")
-	cmd.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "profile in the config file")
-	_ = cmd.MarkPersistentFlagFilename("config", "yaml", "yml")
-	_ = cmd.RegisterFlagCompletionFunc("profile", a.completeProfiles)
+	if !a.noConfigFlags {
+		a.addConfigFlags(cmd)
+	}
 	cmd.SetVersionTemplate("aopctl {{.Version}}\n")
 	cmd.SetErrPrefix("aopctl:")
 	// Children inherit these, so they apply when aopctl is mounted too.
@@ -325,6 +339,14 @@ func newRootCmd(a *app) *cobra.Command {
 	cmd.AddCommand(newCACmd(a), newHostnameCmd(a), newZoneCmd(a), newVersionCmd(a))
 	silenceUsage(cmd)
 	return cmd
+}
+
+// addConfigFlags adds the --config and --profile flags to the root cmd.
+func (a *app) addConfigFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default")
+	cmd.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "profile in the config file")
+	_ = cmd.MarkPersistentFlagFilename("config", "yaml", "yml")
+	_ = cmd.RegisterFlagCompletionFunc("profile", a.completeProfiles)
 }
 
 // newGroupCmd returns a command that only holds subcommands.

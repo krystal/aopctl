@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,6 +98,14 @@ func TestConfigFile(t *testing.T) {
 		assert.Equal(t, "Warning: "+path+" is in use, so aopctl ignores AOP_CA_CERT, AOP_CA_KEY, CLOUDFLARE_ZONE_ID, AOP_HOSTNAMES, CLOUDFLARE_API_TOKEN from the environment.\n", stderr, "stderr")
 	})
 
+	t.Run("warnings come before a hostnames error", func(t *testing.T) {
+		h, path := configHarness(t, "cloudflare_api_token: "+refToken+"\n")
+		h.env["AOP_HOSTNAMES"] = hostA
+		code, _, stderr := h.run("hostname", "issue")
+		assert.Equal(t, 1, code, "exit code")
+		assert.Equal(t, "Warning: "+path+" is in use, so aopctl ignores AOP_HOSTNAMES from the environment.\naopctl: no hostnames: set hostnames in "+path+" or pass --hostname\n", stderr, "stderr")
+	})
+
 	t.Run("an environment token alone is not warned about", func(t *testing.T) {
 		h, _ := configHarness(t, profileConfig)
 		h.env["CLOUDFLARE_API_TOKEN"] = "a token for other tools"
@@ -106,25 +115,36 @@ func TestConfigFile(t *testing.T) {
 	})
 
 	t.Run("printed commands carry the config flags and run as printed", func(t *testing.T) {
-		h, path := configHarness(t, profileConfig)
-		delete(h.env, "AOPCTL_CONFIG")
-		h.fake.AddCert("old-1", h.ca.issue(t))
-		h.fake.SetAssoc(hostA, "old-1", new(true))
-		h.fake.SetAssoc(hostB, "old-1", new(true))
-		code, stdout, stderr := h.run("--config", path, "--profile", "prod", "hostname", "issue")
-		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
-		prefix := "aopctl --config " + path + " --profile prod hostname prune" + zoneOpt + " --cert-id old-1"
-		var prune string
-		for line := range strings.SplitSeq(stdout, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), prefix) {
-				prune = strings.TrimSpace(line)
-			}
-		}
-		require.NotEmpty(t, prune, "no prune command starting %q in stdout:\n%s", prefix, stdout)
+		for _, mounted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mounted %v", mounted), func(t *testing.T) {
+				h, path := configHarness(t, profileConfig)
+				delete(h.env, "AOPCTL_CONFIG")
+				h.fake.AddCert("old-1", h.ca.issue(t))
+				h.fake.SetAssoc(hostA, "old-1", new(true))
+				h.fake.SetAssoc(hostB, "old-1", new(true))
+				run, start := h.run, "aopctl"
+				if mounted {
+					run, start = h.runMounted, "othertool aopctl"
+				}
+				code, stdout, stderr := run("--config", path, "--profile", "prod", "hostname", "issue")
+				require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+				// The path is quoted when it needs to be, as on Windows.
+				config := start + " --config " + quoteArg(path, runtime.GOOS)
+				prefix := config + " --profile prod hostname prune" + zoneOpt + " --cert-id old-1"
+				var prune string
+				for line := range strings.SplitSeq(stdout, "\n") {
+					if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+						prune = strings.TrimSpace(line)
+					}
+				}
+				require.NotEmpty(t, prune, "no prune command starting %q in stdout:\n%s", prefix, stdout)
 
-		code, _, stderr = h.run(append(strings.Fields(prune)[1:], "--yes")...)
-		require.Equal(t, 0, code, "exit code of %q; stderr:\n%s", prune, stderr)
-		assert.Contains(t, stderr, "Deleted old-1")
+				args := append([]string{"--config", path}, strings.Fields(strings.TrimPrefix(prune, config))...)
+				code, _, stderr = run(append(args, "--yes")...)
+				require.Equal(t, 0, code, "exit code of %q; stderr:\n%s", prune, stderr)
+				assert.Contains(t, stderr, "Deleted old-1")
+			})
+		}
 	})
 
 	t.Run("a failed read sends no request", func(t *testing.T) {
@@ -133,6 +153,16 @@ func TestConfigFile(t *testing.T) {
 		code, _, stderr := h.run("--profile", "prod", "hostname", "issue")
 		assert.Equal(t, 1, code, "exit code")
 		assert.Equal(t, "aopctl: resolve cloudflare_api_token ("+refToken+"): not signed in\n", stderr, "stderr")
+		assert.Empty(t, h.fake.Recorded(), "requests sent")
+	})
+
+	t.Run("a failed read of the last reference sends no request", func(t *testing.T) {
+		h, _ := configHarness(t, strings.Replace(profileConfig, cftest.Zone, refZone, 1))
+		delete(h.secrets, refZone)
+		code, _, stderr := h.run("--profile", "prod", "hostname", "issue")
+		assert.Equal(t, 1, code, "exit code")
+		assert.Equal(t, "aopctl: resolve cloudflare_zone_id ("+refZone+"): isn't an item\n", stderr, "stderr")
+		assert.Equal(t, []string{refToken, refCert, refKey, refZone}, h.resolved, "references read")
 		assert.Empty(t, h.fake.Recorded(), "requests sent")
 	})
 
@@ -148,9 +178,10 @@ func TestConfigFile(t *testing.T) {
 		for _, args := range [][]string{{"hostname", "status"}, {"zone", "status"}} {
 			t.Run(strings.Join(args, " "), func(t *testing.T) {
 				h, _ := configHarness(t, strings.Replace(profileConfig, cftest.Zone, refZone, 1))
-				code, _, stderr := h.run(append([]string{"--profile", "prod"}, args...)...)
+				code, stdout, stderr := h.run(append([]string{"--profile", "prod"}, args...)...)
 				require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 				assert.Equal(t, 1, countRef(h.resolved, refZone), "reads of the zone reference")
+				assert.NotContains(t, stdout+stderr, cftest.Zone, "output holds the zone ID read from the reference")
 				require.NotEmpty(t, h.fake.Recorded(), "requests sent")
 				for _, r := range h.fake.Recorded() {
 					assert.Contains(t, r.Path, "/zones/"+cftest.Zone+"/", "request outside the configured zone")
@@ -486,8 +517,10 @@ func TestConfigPermissionWarning(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows file modes do not say who can read a file")
 	}
-	literal := "cloudflare_api_token: " + cftest.Token + "\nprofiles:\n  prod:\n    ca_key: literal\n"
-	refs := "cloudflare_api_token: " + refToken + "\nca_cert: literal certificate\n"
+	// Both files work for hostname status, so a missing warning can't come
+	// from a command that failed before reading the config.
+	literal := "cloudflare_api_token: " + cftest.Token + "\ncloudflare_zone_id: " + cftest.Zone + "\nprofiles:\n  prod:\n    ca_key: literal\n"
+	refs := "cloudflare_api_token: " + refToken + "\ncloudflare_zone_id: " + cftest.Zone + "\n"
 	tests := []struct {
 		content string
 		mode    os.FileMode
@@ -507,7 +540,8 @@ func TestConfigPermissionWarning(t *testing.T) {
 			if tt.content == refs {
 				delete(h.env, "AOPCTL_PROFILE")
 			}
-			_, _, stderr := h.run("hostname", "status")
+			code, _, stderr := h.run("hostname", "status")
+			require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 			warning := "Warning: " + path + " is readable by other users and holds a literal ca_key and cloudflare_api_token: run chmod 600 on it, or use op:// references.\n"
 			if tt.warn {
 				assert.True(t, strings.HasPrefix(stderr, warning), "stderr:\n%s", stderr)
@@ -581,9 +615,10 @@ func TestCAShowConfig(t *testing.T) {
 		assert.Equal(t, []string{refCert}, h.resolved, "references read")
 	})
 
-	t.Run("empty stdin", func(t *testing.T) {
+	t.Run("empty file stdin", func(t *testing.T) {
 		h, _ := configHarness(t, profileConfig)
 		h.secrets[refCert] = vectorCA
+		h.stdinFile = true
 		code, stdout, stderr := h.run("--profile", "prod", "ca", "show")
 		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stdout, "Fingerprint: "+vectorFingerprint)
@@ -594,12 +629,21 @@ func TestCAShowConfig(t *testing.T) {
 		// configured certificate instead.
 		h, _ := configHarness(t, profileConfig)
 		h.secrets[refCert] = vectorCA
-		h.stdinPipe = true
 		code, stdout, stderr := h.run("--profile", "prod", "ca", "show")
 		assert.Equal(t, 1, code, "exit code")
 		assert.Equal(t, "aopctl: stdin: no PEM block found\n", stderr, "stderr")
 		assert.Empty(t, stdout, "stdout")
 		assert.Empty(t, h.resolved, "references read")
+	})
+
+	t.Run("whitespace in a file", func(t *testing.T) {
+		h, _ := configHarness(t, profileConfig)
+		h.secrets[refCert] = vectorCA
+		h.stdinFile = true
+		h.stdin = " \n\t"
+		code, _, stderr := h.run("--profile", "prod", "ca", "show")
+		assert.Equal(t, 1, code, "exit code")
+		assert.Equal(t, "aopctl: stdin: no PEM block found\n", stderr, "stderr")
 	})
 
 	t.Run("stdin wins", func(t *testing.T) {
@@ -643,4 +687,45 @@ func TestQuoteArg(t *testing.T) {
 			assert.Equal(t, tt.in, string(out), "sh round trip")
 		})
 	}
+}
+
+// TestNoConfigFlags mounts aopctl under a host with its own --config flag,
+// which aopctl leaves alone with Options.NoConfigFlags.
+func TestNoConfigFlags(t *testing.T) {
+	assert.Nil(t, NewCommand(Options{NoConfigFlags: true}).PersistentFlags().Lookup("config"), "--config with NoConfigFlags")
+	assert.NotNil(t, NewCommand(Options{}).PersistentFlags().Lookup("config"), "--config without NoConfigFlags")
+
+	h, _ := configHarness(t, profileConfig)
+	h.env["AOPCTL_PROFILE"] = "prod"
+	var hostConfig string
+	host := &cobra.Command{Use: "othertool"}
+	host.PersistentFlags().StringVarP(&hostConfig, "config", "c", "", "the host's config file")
+	a := h.app()
+	a.noConfigFlags = true
+	host.AddCommand(newRootCmd(a))
+	host.SetArgs([]string{"-c", "host.yaml", "aopctl", "hostname", "status"})
+	code, _, stderr := h.capture(host, func() int { return ExitCode(host.Execute()) })
+	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+	assert.Equal(t, "host.yaml", hostConfig, "the host's --config")
+	assert.Equal(t, []string{refToken, refCert}, h.resolved, "references read from AOPCTL_CONFIG's file")
+}
+
+func TestIsFile(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	defer devNull.Close()
+	regular, err := os.Open(writeConfig(t, ""))
+	require.NoError(t, err)
+	defer regular.Close()
+	pipeR, pipeW, err := os.Pipe()
+	require.NoError(t, err)
+	defer pipeR.Close()
+	defer pipeW.Close()
+	goPipe, _ := io.Pipe()
+
+	assert.True(t, isFile(devNull), "os.DevNull")
+	assert.True(t, isFile(regular), "regular file")
+	assert.False(t, isFile(pipeR), "OS pipe")
+	assert.False(t, isFile(goPipe), "io.Pipe")
+	assert.False(t, isFile(strings.NewReader("")), "strings.Reader")
 }

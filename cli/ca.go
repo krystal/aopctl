@@ -191,9 +191,9 @@ func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
 }
 
 // showCert reads the CA certificate ca show describes: the one on stdin,
-// or the configured one when stdin is a terminal, or empty but not a pipe,
-// as /dev/null is. An empty pipe is an error, as the command piping into
-// ca show, such as op read, likely failed.
+// or the configured one when stdin is a terminal, or an empty file or
+// device, as /dev/null is. Any other empty stdin, such as a pipe, is an
+// error, as whatever writes to it, such as op read, likely failed.
 func (a *app) showCert(cmd *cobra.Command) (*x509.Certificate, error) {
 	stdin := cmd.InOrStdin()
 	if !a.stdinIsTerminal(stdin) {
@@ -201,7 +201,7 @@ func (a *app) showCert(cmd *cobra.Command) (*x509.Certificate, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read stdin: %w", err)
 		}
-		if strings.TrimSpace(string(data)) != "" || a.stdinIsPipe(stdin) {
+		if len(data) > 0 || !a.stdinIsFile(stdin) {
 			cert, err := aopctl.ParseCertificatePEM(string(data))
 			if err != nil {
 				return nil, fmt.Errorf("stdin: %w", err)

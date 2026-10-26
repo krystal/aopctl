@@ -69,6 +69,11 @@ func (a *app) zoneHint(z zoneArg) string {
 // zoneCmd starts a printed command that acts in the zone, such as
 // "aopctl hostname prune --zone <ID>".
 func (a *app) zoneCmd(zoneID, sub string) string {
+	if a.zoneFromReference != "" && zoneID == a.zoneFromReference {
+		// The command finds the zone the same way again, and a value read
+		// from a reference stays out of the output.
+		return a.commandPath() + " " + sub
+	}
 	return a.commandPath() + " " + sub + " --zone " + zoneID
 }
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -17,6 +18,9 @@ const referencePrefix = "op://"
 
 // maxDiagnostic caps the line of op's stderr an error carries.
 const maxDiagnostic = 200
+
+// opWaitDelay bounds the wait for op's output after it exits or is killed.
+const opWaitDelay = 5 * time.Second
 
 func isReference(v string) bool {
 	return strings.HasPrefix(v, referencePrefix)
@@ -43,6 +47,9 @@ func opRead(ctx context.Context, ref string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// Stop waiting for output once op exits, even if a process it started
+	// still holds the pipes.
+	cmd.WaitDelay = opWaitDelay
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			if line := opDiagnostic(stderr.String()); line != "" {

@@ -506,7 +506,16 @@ func (a *app) configuredZone(cmd *cobra.Command, z zoneArg) (string, error) {
 			return "", nil
 		}
 	}
-	return a.lookup(cmd, settingZoneID)
+	id, err := a.lookup(cmd, settingZoneID)
+	if err != nil {
+		return "", err
+	}
+	if c, _ := a.config(); c != nil {
+		if v, _ := c.raw(settingZoneID, a.getenv); isReference(v) {
+			a.zoneFromReference = id
+		}
+	}
+	return id, nil
 }
 
 // completeProfiles offers the config file's profiles, without reading any
