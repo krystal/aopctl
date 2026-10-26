@@ -118,7 +118,7 @@ func TestZoneIssue(t *testing.T) {
 	for _, want := range []string{
 		"Certificate " + zoneNew + " is active",
 		"Cloudflare no longer uses: " + zoneOld,
-		"  aopctl zone prune --cert-id " + zoneOld + "\n",
+		"  aopctl zone prune" + zoneOpt + " --cert-id " + zoneOld + "\n",
 	} {
 		assert.Contains(t, stdout, want)
 	}
@@ -156,9 +156,9 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		// Both previously active certificates get prune hints, with the
 		// other CA's marked.
 		for _, want := range []string{
-			"  aopctl zone prune --cert-id " + zoneOld + "\n",
+			"  aopctl zone prune" + zoneOpt + " --cert-id " + zoneOld + "\n",
 			"AOP_CA_CERT did not sign " + zoneTwo,
-			"  aopctl zone prune --cert-id " + zoneTwo + "\n",
+			"  aopctl zone prune" + zoneOpt + " --cert-id " + zoneTwo + "\n",
 		} {
 			assert.Contains(t, stdout, want)
 		}
@@ -222,7 +222,7 @@ func TestZoneIssueConfirmation(t *testing.T) {
 		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		require.Equal(t, 1, zoneUploads(h), "uploads")
 		assert.Contains(t, stdout, "Zone-level AOP is disabled")
-		assert.Contains(t, stdout, "  aopctl zone enable\n")
+		assert.Contains(t, stdout, "  aopctl zone enable"+zoneOpt+"\n")
 		assert.NotContains(t, stdout, "zone prune")
 		assert.Zero(t, settingWrites(h), "setting writes")
 		assert.Empty(t, deletes(h), "deleted")
@@ -253,7 +253,7 @@ func TestZoneIssueFailures(t *testing.T) {
 		code, _, stderr := h.run("zone", "issue")
 		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stderr, "upload outcome unknown")
-		assert.Contains(t, stderr, "run aopctl zone status before retrying")
+		assert.Contains(t, stderr, "run aopctl zone status"+zoneOpt+" before retrying")
 		assert.Equal(t, 1, zoneUploads(h), "uploads")
 		assert.Len(t, h.fake.Writes(), 1, "writes, want one upload only")
 	})
@@ -297,14 +297,14 @@ func TestZoneIssueFailures(t *testing.T) {
 		for _, want := range []string{
 			"New certificate " + zoneNew + " did not become active.",
 			"Cloudflare uses it if it becomes active later",
-			"  aopctl zone prune --cert-id " + zoneNew + "\n",
+			"  aopctl zone prune" + zoneOpt + " --cert-id " + zoneNew + "\n",
 		} {
 			assert.Contains(t, stderr, want)
 		}
 		assert.Empty(t, deletes(h), "deleted")
 		assert.Zero(t, settingWrites(h), "setting writes")
 
-		prune := commandLines(stderr, "aopctl zone prune --cert-id "+zoneNew)
+		prune := commandLines(stderr, "aopctl zone prune"+zoneOpt+" --cert-id "+zoneNew)
 		require.Len(t, prune, 1, "prune commands")
 		code, _, stderr = h.run(append(prune[0], "--yes")...)
 		require.Equal(t, 0, code, "prune: exit code; stderr:\n%s", stderr)
@@ -320,7 +320,7 @@ func TestZoneIssueFailures(t *testing.T) {
 		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stderr, "timed out waiting for certificate "+zoneNew+" to become active: last status pending_deployment")
 		assert.NotContains(t, stderr, "Cloudflare uses it")
-		assert.Contains(t, stderr, "aopctl zone prune --cert-id "+zoneNew)
+		assert.Contains(t, stderr, "aopctl zone prune"+zoneOpt+" --cert-id "+zoneNew)
 	})
 
 	t.Run("polling recovers from a server error", func(t *testing.T) {
@@ -356,7 +356,7 @@ func TestZoneEnable(t *testing.T) {
 	}{
 		{"no certificate", func(_ *testing.T, h *harness) {
 			h.fake.ZoneCerts = nil
-		}, "no active zone-level certificate: upload one with aopctl zone issue"},
+		}, "no active zone-level certificate: upload one with aopctl zone issue" + zoneOpt},
 		{"only a pending certificate", func(t *testing.T, h *harness) {
 			h.fake.ZoneCerts = nil
 			h.fake.AddZoneCert(zoneTwo, h.ca.issue(t), cftest.UploadedOn(2), "pending_deployment")
@@ -481,7 +481,7 @@ func TestZoneEnable(t *testing.T) {
 				return true
 			}
 			code, _, stderr := h.run("zone", "enable", "--yes")
-			unknown := strings.Contains(stderr, "zone-level AOP may now be enabled") && strings.Contains(stderr, "check it with aopctl zone status before retrying")
+			unknown := strings.Contains(stderr, "zone-level AOP may now be enabled") && strings.Contains(stderr, "check it with aopctl zone status"+zoneOpt+" before retrying")
 			assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
 			assert.Equal(t, tt.unknown, unknown, "reported an unknown outcome; stderr:\n%s", stderr)
 			assert.Contains(t, stderr, "enable zone-level AOP: PUT")

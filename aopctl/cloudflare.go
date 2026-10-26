@@ -27,6 +27,12 @@ const (
 	hostnamesPath    = zonePath + "/hostnames"
 	certsPath        = hostnamesPath + "/certificates"
 
+	// zonesPath lists zones, and zoneDetailsPath reads one.
+	zonesPath       = "/zones"
+	zoneDetailsPath = "/zones/{zone}"
+	// zonesPerPage is List Zones' largest page.
+	zonesPerPage = 50
+
 	// codeNoAssociation comes with a 404 for a hostname without an
 	// association.
 	codeNoAssociation = 1553
@@ -483,4 +489,79 @@ func (c *cfClient) getZoneSetting(ctx context.Context) (bool, error) {
 func (c *cfClient) enableZoneSetting(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPut, zoneSettingsPath, nil, map[string]bool{"enabled": true}, nil)
 	return err
+}
+
+// zoneResult is a zone as List Zones and Zone Details return it.
+type zoneResult struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// zoneList is a List Zones result. It must be a list of zones that each
+// have an ID, a name and a status, so a malformed result cannot pass for a
+// name no zone has, which would let a parent zone match.
+type zoneList []zoneResult
+
+func (l *zoneList) validate() error {
+	if *l == nil {
+		return errors.New("the result is not a list")
+	}
+	for _, z := range *l {
+		if z.ID == "" || z.Name == "" || z.Status == "" {
+			return errors.New("the list has a zone without an ID, name or status")
+		}
+	}
+	return nil
+}
+
+// zoneLookupError wraps an HTTP 403, with or without an envelope, in
+// ErrZoneLookupForbidden.
+func zoneLookupError(err error) error {
+	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.status == http.StatusForbidden {
+		return fmt.Errorf("%w: %w", ErrZoneLookupForbidden, err)
+	}
+	return err
+}
+
+// listZones returns the active zones named name. Zones of another name or
+// status, which a drifted filter could return, are skipped. A second page
+// fails the list, as only an ignored filter would need one and the zone
+// could be on a page it did not read. An HTTP 403 wraps
+// ErrZoneLookupForbidden.
+func (c *cfClient) listZones(ctx context.Context, name string) ([]Zone, error) {
+	query := url.Values{"name": {name}, "status": {statusActive}, "per_page": {strconv.Itoa(zonesPerPage)}}
+	var results zoneList
+	totalPages, err := c.do(ctx, http.MethodGet, zonesPath, query, nil, &results)
+	if err != nil {
+		return nil, fmt.Errorf("list zones named %s: %w", name, zoneLookupError(err))
+	}
+	if totalPages > 1 {
+		return nil, fmt.Errorf("list zones named %s: the list has %d pages, want one", name, totalPages)
+	}
+	var zones []Zone
+	seen := map[string]bool{}
+	for _, z := range results {
+		if !strings.EqualFold(z.Name, name) || z.Status != statusActive {
+			continue
+		}
+		if !ValidZoneID(z.ID) {
+			return nil, fmt.Errorf("list zones named %s: the list has an invalid zone ID", name)
+		}
+		if !seen[z.ID] {
+			seen[z.ID] = true
+			zones = append(zones, Zone{ID: z.ID, Name: name})
+		}
+	}
+	return zones, nil
+}
+
+// getZone reads the zone whose ID the client holds. An HTTP 403 wraps
+// ErrZoneLookupForbidden.
+func (c *cfClient) getZone(ctx context.Context) (*zoneResult, error) {
+	var zone zoneResult
+	if _, err := c.do(ctx, http.MethodGet, zoneDetailsPath, nil, nil, &zone); err != nil {
+		return nil, zoneLookupError(err)
+	}
+	return &zone, nil
 }

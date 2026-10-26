@@ -14,8 +14,9 @@ type HostnamePruneRequest struct {
 	// CACert must have signed each certificate.
 	CACert  *x509.Certificate
 	CertIDs []string
-	// Hostnames are normalized with NormalizeHostnames. Only these
-	// hostnames are checked: another hostname may still use a certificate.
+	// Hostnames are normalized with NormalizeHostnames, and there must be
+	// one to MaxHostnames. Only these hostnames are checked: another
+	// hostname may still use a certificate.
 	Hostnames []string
 	// Progress, when set, receives CertificateSkipped while planning and
 	// CertificateRefused, CertificateDeleteFailed and CertificateDeleted

@@ -20,7 +20,35 @@ var (
 	// ErrNoActiveCertificate is returned for a zone without an active
 	// zone-level certificate, which zone-level AOP needs.
 	ErrNoActiveCertificate = errors.New("the zone has no active zone-level certificate")
+	// ErrZoneLookupForbidden is returned, with Cloudflare's error, when
+	// listing zones or reading one gets an HTTP 403.
+	ErrZoneLookupForbidden = errors.New("the API token may not look up zones, which needs the Zone > Zone > Read permission")
 )
+
+// ZoneMatchError reports a hostname or zone name that no active zone
+// matches, or that more than one does. Only the zones the API token can
+// read count.
+type ZoneMatchError struct {
+	// Hostname is the hostname HostnameZone looked up, or "" for ZoneNamed.
+	Hostname string
+	// Name is the zone name more than one active zone has, or the name
+	// ZoneNamed looked up.
+	Name string
+	// Matches is the number of active zones named Name: 0, or more than 1.
+	Matches int
+}
+
+func (e *ZoneMatchError) Error() string {
+	switch {
+	case e.Hostname == "" && e.Matches == 0:
+		return fmt.Sprintf("no active zone is named %s", e.Name)
+	case e.Hostname == "":
+		return fmt.Sprintf("%d active zones are named %s", e.Matches, e.Name)
+	case e.Matches == 0:
+		return fmt.Sprintf("no active zone matches hostname %s", e.Hostname)
+	}
+	return fmt.Sprintf("hostname %s matches %d active zones named %s", e.Hostname, e.Matches, e.Name)
+}
 
 // CAExpiryError reports a CA that expires before the leaf it would sign.
 type CAExpiryError struct {
