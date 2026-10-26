@@ -318,6 +318,15 @@ func mapValues[K comparable, V any](m map[K]V) []V {
 	return values
 }
 
+// flagOrEnv says how to set a value: with the flag or the environment
+// variable, or only the variable when aopctl has no config flags.
+func (a *app) flagOrEnv(flag, env string) string {
+	if a.noConfigFlags {
+		return "set " + env
+	}
+	return "pass " + flag + " or set " + env
+}
+
 // selectedProfile returns the profile --profile or AOPCTL_PROFILE names.
 func (a *app) selectedProfile() string {
 	if a.flagChanged("profile") {
@@ -344,7 +353,7 @@ func (a *app) loadConfig() (*config, error) {
 	profile := a.selectedProfile()
 	if file == nil {
 		if profile != "" {
-			return nil, usagef("profile %s needs a config file: pass --config or set AOPCTL_CONFIG", profile)
+			return nil, usagef("profile %s needs a config file: %s", profile, a.flagOrEnv("--config", "AOPCTL_CONFIG"))
 		}
 		return &config{}, nil
 	}
@@ -355,7 +364,7 @@ func (a *app) loadConfig() (*config, error) {
 		return nil, usagef("profile %s: %s has no profiles", profile, file.path)
 	case len(names) == 0:
 	case profile == "":
-		return nil, usagef("no profile: pass --profile or set AOPCTL_PROFILE (profiles in %s: %s)", file.path, strings.Join(names, ", "))
+		return nil, usagef("no profile: %s (profiles in %s: %s)", a.flagOrEnv("--profile", "AOPCTL_PROFILE"), file.path, strings.Join(names, ", "))
 	default:
 		p, ok := file.Profiles[profile]
 		if !ok {

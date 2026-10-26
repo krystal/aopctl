@@ -175,13 +175,19 @@ func TestConfigFile(t *testing.T) {
 	})
 
 	t.Run("zone reference", func(t *testing.T) {
-		for _, args := range [][]string{{"hostname", "status"}, {"zone", "status"}} {
+		for _, args := range [][]string{{"hostname", "status"}, {"hostname", "issue"}, {"zone", "status"}} {
 			t.Run(strings.Join(args, " "), func(t *testing.T) {
 				h, _ := configHarness(t, strings.Replace(profileConfig, cftest.Zone, refZone, 1))
+				// hostname issue then prints a prune command for old-1.
+				h.fake.AddCert("old-1", h.ca.issue(t))
+				h.fake.SetAssoc(hostA, "old-1", new(true))
 				code, stdout, stderr := h.run(append([]string{"--profile", "prod"}, args...)...)
 				require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 				assert.Equal(t, 1, countRef(h.resolved, refZone), "reads of the zone reference")
 				assert.NotContains(t, stdout+stderr, cftest.Zone, "output holds the zone ID read from the reference")
+				if args[1] == "issue" {
+					assert.Contains(t, stdout, "  aopctl --profile prod hostname prune --cert-id old-1 --hostname "+hostA, "prune command")
+				}
 				require.NotEmpty(t, h.fake.Recorded(), "requests sent")
 				for _, r := range h.fake.Recorded() {
 					assert.Contains(t, r.Path, "/zones/"+cftest.Zone+"/", "request outside the configured zone")
@@ -708,6 +714,17 @@ func TestNoConfigFlags(t *testing.T) {
 	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	assert.Equal(t, "host.yaml", hostConfig, "the host's --config")
 	assert.Equal(t, []string{refToken, refCert}, h.resolved, "references read from AOPCTL_CONFIG's file")
+
+	// Hints and help name only the environment variables.
+	delete(h.env, "AOPCTL_PROFILE")
+	a = h.app()
+	a.noConfigFlags = true
+	root := newRootCmd(a)
+	assert.Contains(t, root.Long, "The first of AOPCTL_CONFIG and", "help")
+	assert.Contains(t, root.Long, "a profile with AOPCTL_PROFILE.", "help")
+	_, err := a.config()
+	require.Error(t, err)
+	assert.True(t, strings.HasPrefix(err.Error(), "no profile: set AOPCTL_PROFILE (profiles in "), "error: %v", err)
 }
 
 func TestIsFile(t *testing.T) {

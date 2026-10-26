@@ -29,7 +29,13 @@ import (
 	"github.com/krystal/aopctl/aopctl"
 )
 
-func rootLong() string {
+// rootLong is the root command's help. configFlags says whether aopctl has
+// its --config and --profile flags.
+func rootLong(configFlags bool) string {
+	configFlag, profileFlag := "--config, ", "--profile or "
+	if !configFlags {
+		configFlag, profileFlag = "", ""
+	}
 	return `aopctl manages a dedicated client CA for Cloudflare Authenticated Origin
 Pulls (AOP) and the per-hostname and zone-level leaf certificates it issues.
 
@@ -39,7 +45,7 @@ op://vault/item/field, which aopctl reads with the 1Password CLI, op. Keys
 are never written to disk.
 
 Config file:
-  The first of --config, AOPCTL_CONFIG and, if it exists,
+  The first of ` + configFlag + `AOPCTL_CONFIG and, if it exists,
   ` + defaultConfigHint() + `. For example:
 
     cloudflare_api_token: op://vault/cloudflare/credential
@@ -50,8 +56,8 @@ Config file:
         hostnames: [app.example.com, admin.example.com]
 
   Top-level settings apply to every profile, which can override them. Select
-  a profile with --profile or AOPCTL_PROFILE. A config file in use is the
-  only source of settings, but cloudflare_api_token falls back to
+  a profile with ` + profileFlag + `AOPCTL_PROFILE. A config file in use is
+  the only source of settings, but cloudflare_api_token falls back to
   CLOUDFLARE_API_TOKEN.
 
 Settings, as config file keys and environment variables:
@@ -322,7 +328,7 @@ func newRootCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "aopctl",
 		Short:   "Manage Cloudflare Authenticated Origin Pulls certificates",
-		Long:    rootLong(),
+		Long:    rootLong(!a.noConfigFlags),
 		Version: a.version,
 		Args:    noArgs,
 		RunE:    helpUsage,
