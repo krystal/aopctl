@@ -69,9 +69,11 @@ jobs:
           # audit does not check this workflow's triggers, so keep this.
           cache: false
       - run: mise run build:release
-      # --clobber replaces assets an earlier, failed attempt uploaded.
-      - name: Upload the archives to the draft release
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*_checksums.txt --clobber
+      # --clobber replaces assets an earlier, failed attempt uploaded. The
+      # config file's JSON schema keeps an unversioned name, so the latest
+      # release's URL for it never changes, and the checksums file lists it.
+      - name: Upload the archives and schema to the draft release
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/*_checksums.txt schemas/config.schema.json --clobber
         env:
           GH_TOKEN: ${{ github.token }}
       # Only releases from main become the latest release, so a maintenance

@@ -65,6 +65,10 @@ depends = ["lint:go", "lint:actions", "lint:zizmor", "lint:pinact", "lint:gorele
 description = "Run unit tests"
 run = "go test -count=1 ./..."
 
+[tasks."generate:schema"]
+description = "Regenerate the config file's JSON schema from its Go types"
+run = "go test ./cli -run '^TestConfigSchema$' -count=1 -update"
+
 [tasks.build]
 description = "Build snapshot release archives for every platform into dist/"
 run = "goreleaser release --snapshot --clean"

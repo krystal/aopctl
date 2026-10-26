@@ -1,0 +1,2 @@
+# The schema tests compare the generated schema byte for byte.
+schemas/*.json text eol=lf
