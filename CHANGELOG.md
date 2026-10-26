@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/krystal/aopctl/compare/v0.1.1...v0.1.2) (2026-10-26)
+
+
+### Features
+
+* find each hostname's zone, so one env file can span zones ([#13](https://github.com/krystal/aopctl/issues/13)) ([4dd7c07](https://github.com/krystal/aopctl/commit/4dd7c0754797eca38158fa2058f9392e29db5519))
+
 ## [0.1.1](https://github.com/krystal/aopctl/compare/v0.1.0...v0.1.1) (2026-10-22)
 
 
