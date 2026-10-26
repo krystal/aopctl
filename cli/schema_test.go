@@ -58,7 +58,9 @@ func readmeConfig(t *testing.T) string {
 	t.Helper()
 	readme, err := os.ReadFile("../README.md")
 	require.NoError(t, err, "read README.md")
-	_, example, ok := strings.Cut(string(readme), "```yaml\n# ~/.config/aopctl/config.yaml\n")
+	// Git checks README.md out with CRLF line endings on Windows.
+	text := strings.ReplaceAll(string(readme), "\r\n", "\n")
+	_, example, ok := strings.Cut(text, "```yaml\n# ~/.config/aopctl/config.yaml\n")
 	require.True(t, ok, "no example config file in README.md")
 	example, _, ok = strings.Cut(example, "```")
 	require.True(t, ok, "unterminated example config file in README.md")

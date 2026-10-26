@@ -257,12 +257,14 @@ read as text, so `cloudflare_zone_id: 0123...` keeps its leading zero. When
 the file holds a literal `ca_key` or `cloudflare_api_token` rather than a
 reference, and other users can read it, `aopctl` warns you to `chmod 600` it.
 
-Each release publishes a JSON schema for the config file. With the
+Releases after v0.1.3 publish a JSON schema for the config file. With the
 `yaml-language-server` comment from the example, editors that support it,
 such as VS Code with the [YAML extension][vscode-yaml] and JetBrains IDEs,
 validate and complete the file against the latest release's schema. To pin
 the schema to the version you run, use
 `https://github.com/krystal/aopctl/releases/download/vX.Y.Z/config.schema.json`.
+The schema expects text, so quote a value that YAML would read as a number,
+such as an all-digit `cloudflare_zone_id`.
 
 The commands `aopctl` prints for you to run next carry the `--config` and
 `--profile` you gave.
