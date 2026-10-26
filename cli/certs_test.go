@@ -61,7 +61,7 @@ func TestCAShorterThanLeaf(t *testing.T) {
 
 func TestKeyCertMismatch(t *testing.T) {
 	ca, other := newTestCA(t, 3650), newTestCA(t, 3650)
-	_, _, err := loadCA(ca.certPEM, other.keyPEM)
+	_, _, err := envApp().loadCA(ca.certPEM, other.keyPEM)
 	assert.ErrorContains(t, err, "does not match", "loadCA mismatched pair")
 
 	h := newHarness(t)
@@ -75,9 +75,9 @@ func TestKeyCertMismatch(t *testing.T) {
 func TestLoadCARejectsWrongInputs(t *testing.T) {
 	ca := newTestCA(t, 3650)
 	leafPEM := ca.issue(t)
-	_, _, err := loadCA(leafPEM, ca.keyPEM)
+	_, _, err := envApp().loadCA(leafPEM, ca.keyPEM)
 	assert.ErrorContains(t, err, "not a CA", "leaf as CA")
-	_, _, err = loadCA(ca.certPEM, ca.certPEM)
+	_, _, err = envApp().loadCA(ca.certPEM, ca.certPEM)
 	assert.ErrorContains(t, err, "PKCS#8", "certificate as key")
 }
 
@@ -88,4 +88,9 @@ func TestPEMWhitespace(t *testing.T) {
 	code, _, stderr := h.run("hostname", "issue", "--dry-run", "--hostname", "app.example.com")
 	require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 	assert.Equal(t, 1, h.fake.Count(http.MethodGet, "/hostnames/app.example.com"), "did not reach the preflight reads")
+}
+
+// envApp is an app that reads an empty environment and no config file.
+func envApp() *app {
+	return &app{getenv: func(string) string { return "" }}
 }
