@@ -120,13 +120,16 @@ func (a *app) caCreate(cmd *cobra.Command, o *caCreateOptions) error {
 SHA-256 fingerprint: %s
 
 Next steps:
-  1. Reference the item's ca_cert and ca_key fields as AOP_CA_CERT and
-     AOP_CA_KEY in the env file you pass to op run.
+  1. Reference the item's ca_cert and ca_key fields, as op:// references,
+     in the ca_cert and ca_key settings of your aopctl config file, or as
+     AOP_CA_CERT and AOP_CA_KEY in the env file you pass to op run.
   2. Pin the fingerprint in traefik-plugin-cloudflare-origin's
      clientCertFingerprints.
   3. Create the Traefik Secret from the certificate with
+     %s ca show --secret <name>
+     or, without ca_cert in a config file, with
      op read "op://<vault>/<item>/ca_cert" | %s ca show --secret <name>
-`, o.name, describeKey(cert.PublicKey), expires, fp, a.commandPath())
+`, o.name, describeKey(cert.PublicKey), expires, fp, a.commandPath(), a.root.CommandPath())
 	return nil
 }
 
@@ -138,8 +141,8 @@ type caShowOptions struct {
 func newCAShowCmd(a *app) *cobra.Command {
 	o := &caShowOptions{}
 	cmd := &cobra.Command{
-		Use:   "show [flags] < ca.crt",
-		Short: "Describe the CA certificate read from stdin",
+		Use:   "show [flags] [< ca.crt]",
+		Short: "Describe the CA certificate read from stdin or the config",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.caShow(cmd, o)
@@ -151,7 +154,7 @@ func newCAShowCmd(a *app) *cobra.Command {
 }
 
 func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
-	stdin, stdout, stderr := cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	secret, namespace := o.secret, o.namespace
 	if namespace != "" && secret == "" {
 		return usagef("--namespace requires --secret")
@@ -162,17 +165,9 @@ func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
 	if namespace != "" && (len(namespace) > 63 || !namespacePattern.MatchString(namespace)) {
 		return usagef("invalid --namespace %q: want a Kubernetes namespace name", namespace)
 	}
-	if a.stdinIsTerminal(stdin) {
-		return errors.New("ca show reads the CA certificate PEM from stdin: pipe it in, for example with op read")
-	}
-
-	data, err := io.ReadAll(io.LimitReader(stdin, maxCertInput))
+	cert, err := a.showCert(cmd)
 	if err != nil {
-		return fmt.Errorf("read stdin: %w", err)
-	}
-	cert, err := aopctl.ParseCertificatePEM(string(data))
-	if err != nil {
-		return fmt.Errorf("stdin: %w", err)
+		return err
 	}
 	warnings := aopctl.CAProfileWarnings(cert)
 
@@ -195,6 +190,42 @@ func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
 	return nil
 }
 
+// showCert reads the CA certificate ca show describes: the one on stdin,
+// or the configured one when stdin is a terminal, or an empty file or
+// device, as /dev/null is. Any other empty stdin, such as a pipe, is an
+// error, as whatever writes to it, such as op read, likely failed.
+func (a *app) showCert(cmd *cobra.Command) (*x509.Certificate, error) {
+	stdin := cmd.InOrStdin()
+	if !a.stdinIsTerminal(stdin) {
+		data, err := io.ReadAll(io.LimitReader(stdin, maxCertInput))
+		if err != nil {
+			return nil, fmt.Errorf("read stdin: %w", err)
+		}
+		if len(data) > 0 || !a.stdinIsFile(stdin) {
+			cert, err := aopctl.ParseCertificatePEM(string(data))
+			if err != nil {
+				return nil, fmt.Errorf("stdin: %w", err)
+			}
+			return cert, nil
+		}
+	}
+	certPEM, err := a.lookup(cmd, settingCACert)
+	if err != nil {
+		return nil, err
+	}
+	if certPEM == "" {
+		if c, err := a.config(); err == nil && c.file != nil {
+			return nil, fmt.Errorf("ca show reads the CA certificate PEM from stdin or %s: pipe it in, for example with op read, or set %s in %s", settingCACert.key, settingCACert.key, c.where())
+		}
+		return nil, fmt.Errorf("ca show reads the CA certificate PEM from stdin or %s: pipe it in, for example with op read, set %s, or set %s in a config file", settingCACert.env, settingCACert.env, settingCACert.key)
+	}
+	cert, err := aopctl.ParseCertificatePEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.name(settingCACert), err)
+	}
+	return cert, nil
+}
+
 // writeSecretManifest writes the CA Secret from the first example in the
 // traefik-plugin-cloudflare-origin README.
 func writeSecretManifest(w io.Writer, name, namespace, certPEM string) {
@@ -208,31 +239,34 @@ func writeSecretManifest(w io.Writer, name, namespace, certPEM string) {
 	}
 }
 
-// loadCA parses the CA pair from AOP_CA_CERT and AOP_CA_KEY and checks that
-// the key matches.
-func loadCA(certPEM, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
-	cert, err := parseCACert(certPEM)
+// loadCA parses the configured CA pair and checks that the key matches.
+func (a *app) loadCA(certPEM, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
+	cert, err := a.parseCACert(certPEM)
 	if err != nil {
 		return nil, nil, err
 	}
 	key, err := aopctl.ParsePrivateKeyPEM(keyPEM)
 	if err != nil {
-		return nil, nil, fmt.Errorf("AOP_CA_KEY: %w", err)
+		return nil, nil, fmt.Errorf("%s: %w", a.name(settingCAKey), err)
 	}
 	if pub, ok := key.Public().(interface{ Equal(crypto.PublicKey) bool }); !ok || !pub.Equal(cert.PublicKey) {
-		return nil, nil, errors.New("AOP_CA_KEY does not match the certificate in AOP_CA_CERT")
+		return nil, nil, a.keyMismatchError()
 	}
 	return cert, key, nil
 }
 
-// parseCACert parses AOP_CA_CERT.
-func parseCACert(certPEM string) (*x509.Certificate, error) {
+func (a *app) keyMismatchError() error {
+	return fmt.Errorf("%s does not match the certificate in %s", a.name(settingCAKey), a.name(settingCACert))
+}
+
+// parseCACert parses the configured CA certificate.
+func (a *app) parseCACert(certPEM string) (*x509.Certificate, error) {
 	cert, err := aopctl.ParseCACertificate(certPEM)
 	if errors.Is(err, aopctl.ErrNotCA) {
-		return nil, errors.New("AOP_CA_CERT is not a CA certificate")
+		return nil, fmt.Errorf("%s is not a CA certificate", a.name(settingCACert))
 	}
 	if err != nil {
-		return nil, fmt.Errorf("AOP_CA_CERT: %w", err)
+		return nil, fmt.Errorf("%s: %w", a.name(settingCACert), err)
 	}
 	return cert, nil
 }

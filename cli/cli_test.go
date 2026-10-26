@@ -61,9 +61,20 @@ type harness struct {
 	ca   *testCA
 	env  map[string]string
 
+	// secrets are the values of the 1Password references the fake
+	// resolver knows, and resolved records the references it was asked
+	// for. resolveErr, when set, fails every resolve, and
+	// resolvedInBudget records whether a resolve had a deadline, as the
+	// --timeout budget sets.
+	secrets          map[string]string
+	resolved         []string
+	resolveErr       error
+	resolvedInBudget bool
+
 	stdin     string
 	stdoutTTY bool
 	stdinTTY  bool
+	stdinFile bool
 	openTTY   func() (io.ReadWriteCloser, error)
 	now       time.Time
 
@@ -132,9 +143,24 @@ func (h *harness) capture(cmd *cobra.Command, run func() int) (code int, stdout,
 
 func (h *harness) app() *app {
 	return &app{
-		getenv:           func(k string) string { return h.env[k] },
+		getenv: func(k string) string { return h.env[k] },
+		resolve: func(ctx context.Context, ref string) (string, error) {
+			h.resolved = append(h.resolved, ref)
+			if _, ok := ctx.Deadline(); ok {
+				h.resolvedInBudget = true
+			}
+			if h.resolveErr != nil {
+				return "", h.resolveErr
+			}
+			v, ok := h.secrets[ref]
+			if !ok {
+				return "", errors.New("isn't an item")
+			}
+			return v, nil
+		},
 		stdoutIsTerminal: func(io.Writer) bool { return h.stdoutTTY },
 		stdinIsTerminal:  func(io.Reader) bool { return h.stdinTTY },
+		stdinIsFile:      func(io.Reader) bool { return h.stdinFile },
 		openTTY:          h.openTTY,
 		baseURL:          h.srv.URL,
 		wait: func(ctx context.Context, _ time.Duration) error {
@@ -594,8 +620,13 @@ func TestHostnames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &app{getenv: func(string) string { return tt.env }}
-			got, err := a.hostnames(tt.flags)
+			a := &app{getenv: func(k string) string {
+				if k == "AOP_HOSTNAMES" {
+					return tt.env
+				}
+				return ""
+			}}
+			got, err := a.hostnames(&cobra.Command{}, tt.flags)
 			if tt.err {
 				var usageErr *usageError
 				require.ErrorAs(t, err, &usageErr)

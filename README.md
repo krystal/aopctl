@@ -33,8 +33,9 @@ your hostnames apart from requests Cloudflare proxies for anyone else. The
 plugin README's [security model][plugin-security] explains why neither
 Cloudflare's IP ranges nor its shared AOP certificate can do that.
 
-`aopctl` reads secrets from environment variables and never writes a key to
-disk. The `aopctl` library package uses only the Go standard library, and the
+`aopctl` reads its settings from a config file or environment variables,
+reads 1Password secret references with the 1Password CLI, and never writes a
+key to disk. The `aopctl` library package uses only the Go standard library, and the
 command line uses [cobra](https://github.com/spf13/cobra).
 
 [plugin]: https://github.com/krystal/traefik-plugin-cloudflare-origin
@@ -47,6 +48,8 @@ command line uses [cobra](https://github.com/spf13/cobra).
 [plugin-access-logs]: https://github.com/krystal/traefik-plugin-cloudflare-origin#access-logs
 [cf-zone-aop]: https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/
 [cf-manage-certs]: https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/manage-certificates/
+[op-cli]: https://developer.1password.com/docs/cli/
+[op-app-integration]: https://developer.1password.com/docs/cli/app-integration/
 
 ## Install
 
@@ -165,9 +168,10 @@ every session:
 aopctl completion powershell | Out-String | Invoke-Expression
 ```
 
-Completion covers commands, flags, the `--key-type` values and, for
-`--hostname`, the entries of `AOP_HOSTNAMES` when it is set. It never calls
-the Cloudflare API, so it needs no token, and it offers no `--zone` values.
+Completion covers commands, flags, the `--key-type` values, the config file's
+profiles for `--profile` and, for `--hostname`, the configured hostnames. It
+never calls the Cloudflare API or reads a 1Password reference, so it needs no
+token, and it offers no `--zone` values.
 
 ### On Windows
 
@@ -180,13 +184,96 @@ are pipes rather than the console, so `aopctl` doesn't detect a terminal:
 
 ## Configure
 
-`aopctl` reads its configuration from environment variables, so any way of
-setting them works. It contains no 1Password code, but the examples here use
-1Password's `op run`: keep `op://` references in an env file, and run each
-`hostname` and `zone` command through `op run --env-file`.
+`aopctl` reads its settings from a YAML config file, or from environment
+variables when no config file is in use. Any setting but `hostnames` can be a
+1Password secret reference, `op://<vault>/<item>/<field>`, which `aopctl`
+reads with the [1Password CLI][op-cli], `op`.
 
-Keep one env file per CA. `AOP_HOSTNAMES` lists the CA's hostnames across all
-your zones, and the `hostname` commands find each hostname's zone:
+### The config file
+
+Keep one profile per CA. `hostnames` lists the CA's hostnames across all your
+zones, and the `hostname` commands find each hostname's zone. Top-level
+settings apply to every profile, which can override them:
+
+```yaml
+# ~/.config/aopctl/config.yaml
+cloudflare_api_token: op://<vault>/<token item>/credential
+profiles:
+  production:
+    ca_cert: op://<vault>/<item>/ca_cert
+    ca_key: op://<vault>/<item>/ca_key
+    hostnames:
+      - app.example.com
+      - admin.example.com
+      - app.eu.example.com
+      - shop.example.org
+  staging:
+    ca_cert: op://<vault>/<staging item>/ca_cert
+    ca_key: op://<vault>/<staging item>/ca_key
+    hostnames:
+      - app.staging.example.com
+```
+
+```sh
+aopctl --profile production hostname status
+aopctl --profile production hostname issue --zone example.com
+```
+
+`aopctl` uses the first config file it finds:
+
+1. `--config <path>`.
+2. `AOPCTL_CONFIG`.
+3. `$XDG_CONFIG_HOME/aopctl/config.yaml`, or `~/.config/aopctl/config.yaml`
+   when `XDG_CONFIG_HOME` is unset, on Linux and macOS, and
+   `%AppData%\aopctl\config.yaml` on Windows, if the file exists.
+
+It never looks for a config file in the current directory. To keep one with a
+project, set `AOPCTL_CONFIG`, for example with [direnv](https://direnv.net).
+
+When a file has `profiles`, select one with `--profile` or `AOPCTL_PROFILE`.
+There is no default profile, so a command can't act on production by
+accident. A file without `profiles` holds the settings of one CA.
+
+A config file in use is the only source of settings: `aopctl` ignores
+`AOP_CA_CERT`, `AOP_CA_KEY`, `CLOUDFLARE_ZONE_ID` and `AOP_HOSTNAMES`, and
+warns when any of them is set, as with an env file for `op run`. The exception
+is the token. When neither the profile nor the top level sets
+`cloudflare_api_token`, `aopctl` uses `CLOUDFLARE_API_TOKEN` and says so on
+stderr. A profile's `hostnames` replaces the top-level list rather than adding
+to it.
+
+| Key                    | Environment variable   | Used by                                                                               |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| `ca_cert`              | `AOP_CA_CERT`          | every `hostname` and `zone` command; optional for `hostname status` and `zone status` |
+| `ca_key`               | `AOP_CA_KEY`           | `hostname issue` and `zone issue`, as a PKCS#8 PEM                                    |
+| `cloudflare_api_token` | `CLOUDFLARE_API_TOKEN` | every `hostname` and `zone` command                                                   |
+| `cloudflare_zone_id`   | `CLOUDFLARE_ZONE_ID`   | optional: the zone of every `hostname` and `zone` command without `--zone`            |
+| `hostnames`            | `AOP_HOSTNAMES`        | every `hostname` command: a list, or comma- or whitespace-separated in the variable   |
+
+Unknown keys are errors, so a misspelled key doesn't go unnoticed. Values are
+read as text, so `cloudflare_zone_id: 0123...` keeps its leading zero. When
+the file holds a literal `ca_key` or `cloudflare_api_token` rather than a
+reference, and other users can read it, `aopctl` warns you to `chmod 600` it.
+
+The commands `aopctl` prints for you to run next carry the `--config` and
+`--profile` you gave.
+
+### 1Password references
+
+`aopctl` runs `op read` for each reference a command needs, before it calls
+the Cloudflare API. `hostname status` never reads `ca_key`, for example.
+`op` asks for approval through the 1Password app when its
+[app integration][op-app-integration] is on, or uses a service account's
+`OP_SERVICE_ACCOUNT_TOKEN`. When `op` isn't on your `PATH`, or a reference
+fails, `aopctl` names the setting and the reference, and shows the last line
+of `op`'s error.
+
+### Environment variables
+
+Without a config file, `aopctl` reads the environment variables in the table
+above. Values that are `op://` references work there too, or you can keep the
+references in an env file and run each `hostname` and `zone` command through
+`op run --env-file`:
 
 ```sh
 # aop-production.env
@@ -201,18 +288,12 @@ op run --env-file aop-production.env -- aopctl hostname status
 op run --env-file aop-production.env -- aopctl hostname issue --zone example.com
 ```
 
-| Variable               | Used by                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `AOP_CA_CERT`          | every `hostname` and `zone` command; optional for `hostname status` and `zone status` |
-| `AOP_CA_KEY`           | `hostname issue` and `zone issue`, as a PKCS#8 PEM                                    |
-| `CLOUDFLARE_API_TOKEN` | every `hostname` and `zone` command                                                   |
-| `CLOUDFLARE_ZONE_ID`   | optional: the zone of every `hostname` and `zone` command without `--zone`            |
-| `AOP_HOSTNAMES`        | every `hostname` command, comma- or whitespace-separated                              |
+### Hostnames
 
-`AOP_HOSTNAMES` must list every hostname this CA serves, across all zones.
-Cloudflare has no API that lists all hostname associations, so `aopctl` only
-sees the hostnames you list. `--hostname` flags replace the variable. Repeat
-the flag or give it a comma-separated list, as in
+The configured hostnames must list every hostname this CA serves, across all
+zones. Cloudflare has no API that lists all hostname associations, so
+`aopctl` only sees the hostnames you list. `--hostname` flags replace the
+configured hostnames. Repeat the flag or give it a comma-separated list, as in
 `--hostname app.example.com,admin.example.com`.
 A certificate can serve at most 100 hostnames, so each zone can have at most
 100 hostnames in the list.
@@ -223,7 +304,7 @@ Each command acts in the first zone it finds of:
 
 1. `--zone`, which takes a zone name such as `example.com`, or a zone ID of
    32 hex digits.
-2. `CLOUDFLARE_ZONE_ID`.
+2. The configured zone ID: `cloudflare_zone_id`, or `CLOUDFLARE_ZONE_ID`.
 3. For the `hostname` commands only, the zone of each hostname: the active zone
    whose name is the longest the hostname equals or ends with. A subdomain zone
    such as `eu.example.com` takes `app.eu.example.com` from `example.com`.
@@ -234,15 +315,17 @@ Each command acts in the first zone it finds of:
 `hostname issue`, `hostname associate` and `hostname prune` change one zone at
 a time: when the hostnames are in several zones, they change nothing and ask
 for `--zone`. With `--zone`, a `hostname` command acts only on the hostnames in
-that zone, skips the other `AOP_HOSTNAMES` entries, and rejects a `--hostname`
+that zone, skips the other configured hostnames, and rejects a `--hostname`
 in another zone. The `zone` commands never use the hostnames, so they need
-`--zone` or `CLOUDFLARE_ZONE_ID`.
+`--zone` or a configured zone ID.
 
-`CLOUDFLARE_ZONE_ID` works as it always has: `aopctl` treats every hostname as
-in that zone and looks nothing up, so an env file per zone keeps working. A
-`--zone` with the same ID changes nothing, so it looks nothing up either. The
-commands `aopctl` prints for you to run next, such as the prune and rollback
-commands, include `--zone` with the zone's ID.
+A configured zone ID works as `CLOUDFLARE_ZONE_ID` always has: `aopctl`
+treats every hostname as in that zone and looks nothing up, so a profile or
+env file per zone keeps working. A `--zone` with the same ID changes nothing,
+so it looks nothing up either. A `--zone` replaces a configured zone ID that
+is a reference without reading it. The commands `aopctl` prints for you to
+run next, such as the prune and rollback commands, include `--zone` with the
+zone's ID, unless it was read from a reference, which they find again.
 
 ### Create the API token
 
@@ -257,7 +340,7 @@ Finding a zone by name, a hostname's zone, or the hostnames in a `--zone` lists
 zones, which also needs **Zone > Zone > Read**. The token needs it for every zone the hostnames are in,
 including subdomain zones: `aopctl` sees only the zones the token can read, so
 it would match a hostname in a zone it can't read to a parent zone, or to none.
-The lookup isn't needed when `CLOUDFLARE_ZONE_ID` is set and `--zone` is either
+The lookup isn't needed when a zone ID is configured and `--zone` is either
 absent or the same ID, or when a `zone` command gets `--zone` as an ID.
 
 ## Commands
@@ -296,16 +379,21 @@ aopctl ca create --name "Example AOP CA" | op item create --vault <vault> -
 Pin the fingerprint in the plugin's `clientCertFingerprints`. The plugin
 README explains when to [pin the CA or the client certificate][plugin-pin].
 
-`aopctl ca show` reads the CA certificate from stdin, not from the
-environment, because `op run` masks secret values in a command's output,
-including the certificate. It prints the fingerprint to pin, the validity and
-the key type, and warns when the certificate does not match the CA profile.
-With `--secret` it prints only the Secret:
+`aopctl ca show` describes the CA certificate on stdin or, when stdin is a
+terminal or an empty file or device, such as `/dev/null`, the configured one.
+An empty pipe is an error rather than a fallback, because the command piping
+into `ca show`, such as `op read`, likely failed. It prints the fingerprint to pin, the
+validity and the key type, and warns when the certificate does not match the
+CA profile. With `--secret` it prints only the Secret:
 
 ```sh
+aopctl --profile production ca show
+aopctl --profile production ca show --secret cloudflare-aop-ca --namespace app
 op read "op://<vault>/<item>/ca_cert" | aopctl ca show
-op read "op://<vault>/<item>/ca_cert" | aopctl ca show --secret cloudflare-aop-ca --namespace app
 ```
+
+Pipe the certificate in when you use `op run`: it masks secret values in a
+command's output, including the certificate in `AOP_CA_CERT`.
 
 `aopctl hostname issue` issues an EC P-256 leaf (`--key-type rsa-3072` for RSA)
 for client authentication, valid for 365 days (`--days`). Before it writes
@@ -319,8 +407,8 @@ key is only ever sent in the upload request. `hostname issue` never deletes a
 certificate.
 
 `aopctl hostname prune` deletes only the certificates named with
-`--cert-id`. It refuses a certificate that is not signed by `AOP_CA_CERT` or
-that a listed hostname uses, and checks the listed hostnames again just before
+`--cert-id`. It refuses a certificate that is not signed by the configured CA
+(`ca_cert`) or that a listed hostname uses, and checks the listed hostnames again just before
 each delete. It shows a preview and asks for confirmation on the terminal,
 through `/dev/tty` or the Windows console so the prompt works under `op run`,
 unless you pass `--yes`. A certificate already being deleted is waited for,
@@ -339,13 +427,13 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
    use now:
 
    ```sh
-   op run --env-file aop-production.env -- aopctl hostname issue --zone example.com --dry-run
+   aopctl --profile production hostname issue --zone example.com --dry-run
    ```
 
 2. Issue and roll out the new leaf:
 
    ```sh
-   op run --env-file aop-production.env -- aopctl hostname issue --zone example.com
+   aopctl --profile production hostname issue --zone example.com
    ```
 
    It prints the certificates the listed hostnames no longer use, and the
@@ -356,7 +444,7 @@ When the plugin pins the CA, rotating the leaf needs no Traefik change.
 4. Prune the old certificates soon, with the printed command:
 
    ```sh
-   op run --env-file aop-production.env -- aopctl hostname prune --zone <zone ID> --cert-id <old ID> --hostname <hostname>...
+   aopctl --profile production hostname prune --zone <zone ID> --cert-id <old ID> --hostname <hostname>...
    ```
 
    Cloudflare's documentation says that when several certificates exist, "the
@@ -372,8 +460,8 @@ through Cloudflare then pass only when Cloudflare presents the new leaf.
 
 To rotate the CA itself, follow [Rotate the CA][plugin-rotate-ca] in the
 plugin README. `aopctl hostname associate` and `aopctl hostname prune` only
-accept certificates signed by `AOP_CA_CERT`, so roll back to, or prune, the
-old CA's leaves with `AOP_CA_CERT` set to the old CA.
+accept certificates signed by the configured CA, so roll back to, or prune,
+the old CA's leaves with `ca_cert`, or `AOP_CA_CERT`, set to the old CA.
 
 ## Recover or roll back
 
@@ -397,10 +485,10 @@ continue or undo the rollout:
   ```
 
 None of these needs a free certificate slot. `hostname associate` only
-accepts an `active` certificate signed by `AOP_CA_CERT`, and `--dry-run`
+accepts an `active` certificate signed by the configured CA, and `--dry-run`
 previews it. During a CA rotation, the hostnames' original certificates are
-the old CA's, so run the rollback commands with `AOP_CA_CERT` set to the old
-CA. `hostname issue` marks each command that needs this.
+the old CA's, so run the rollback commands with `ca_cert`, or `AOP_CA_CERT`,
+set to the old CA. `hostname issue` marks each command that needs this.
 
 If the new certificate never becomes active, `hostname issue` changes no
 hostname, so there is nothing to resume or roll back. It prints the
@@ -453,7 +541,7 @@ deletes a certificate and never changes the setting. Its plan shows the new
 leaf, the zone-level certificates, the setting and the certificate in use, and
 `--dry-run` stops there. While zone-level AOP is enabled, the new certificate
 takes over the zone as soon as it is active. So when the certificate in use is
-not signed by `AOP_CA_CERT`, or is unknown, `zone issue` asks for confirmation
+not signed by the configured CA, or is unknown, `zone issue` asks for confirmation
 first, unless you pass `--yes`: origins that trust only the old CA would
 reject Cloudflare's requests. Afterwards it prints the `aopctl zone prune`
 commands for the previously active certificates, or the `aopctl zone enable`
@@ -464,7 +552,7 @@ Cloudflare documents no limit on zone-level certificates, so `aopctl` checks
 none and reports Cloudflare's error if there is one.
 
 `aopctl zone enable` turns zone-level AOP on. It refuses unless the zone has an
-active zone-level certificate and `AOP_CA_CERT` signed the newest active one,
+active zone-level certificate and the configured CA signed the newest active one,
 which Cloudflare then uses. It asks for confirmation unless you pass `--yes`,
 checks the certificates again just before the change, and reads the setting
 back. If the request fails without a usable response or with a server error,
@@ -480,12 +568,12 @@ PUT /zones/{zone}/origin_tls_client_auth/settings
 
 `aopctl zone status` shows the setting and each zone-level certificate's ID,
 status, subject, key type, fingerprint, expiry, `uploaded_on`, `enabled` field
-and whether `AOP_CA_CERT` signed it. It marks the certificate in use and warns
+and whether the configured CA signed it. It marks the certificate in use and warns
 when more than one certificate is active.
 
 `aopctl zone prune` deletes only the certificates named with `--cert-id`. An ID
 is a UUID, with or without dashes, in either case. Like `hostname prune`, it
-refuses a certificate that is missing or not signed by `AOP_CA_CERT`, and waits
+refuses a certificate that is missing or not signed by the configured CA, and waits
 for one already being deleted. While zone-level AOP is enabled, it also refuses
 to delete the last active certificate. When you name every active certificate,
 it keeps the newest one, and Cloudflare uses that one afterwards, which may not
@@ -493,8 +581,8 @@ be the one it uses now. It checks the zone again just before each delete.
 
 When `zone prune` deletes the certificate in use, it shows the one Cloudflare
 falls back to: the newest remaining active certificate. It warns when
-`AOP_CA_CERT` did not sign that certificate, or when it cannot tell which one
-it is, because origins that trust only `AOP_CA_CERT` would then reject
+the configured CA did not sign that certificate, or when it cannot tell which
+one it is, because origins that trust only that CA would then reject
 Cloudflare's requests. Deleting a new certificate to fall back to an older one
 is how you roll back a rotation. It asks for confirmation unless you pass
 `--yes`. `--dry-run` shows the plan without deleting, and exits with 1 when
@@ -509,14 +597,14 @@ as the `hostname` commands.
    not use it yet:
 
    ```sh
-   op run --env-file aop-production.env -- aopctl zone issue --zone example.com
+   aopctl --profile production zone issue --zone example.com
    ```
 
 2. Configure the origins to trust the CA, then turn zone-level AOP on:
 
    ```sh
-   op run --env-file aop-production.env -- aopctl zone enable --zone example.com --dry-run
-   op run --env-file aop-production.env -- aopctl zone enable --zone example.com
+   aopctl --profile production zone enable --zone example.com --dry-run
+   aopctl --profile production zone enable --zone example.com
    ```
 
 ### Rotate the zone-level certificate
@@ -545,14 +633,23 @@ os.Exit(cli.ExitCode(err))
 ```
 
 `othertool aopctl hostname status` then works as `aopctl hostname status`
-does, with the same environment variables. The commands `aopctl` prints, such
+does, with the same config file and environment variables. The commands `aopctl` prints, such
 as the rollback and prune commands, start with `othertool aopctl`. Its errors
 print with an `aopctl:` prefix unless the root command sets `SilenceErrors`,
 and `cli.ExitCode` maps them to `aopctl`'s exit status: 0, 1, or 2 for usage
 errors. A command group run without a subcommand, such as
 `othertool aopctl hostname`, prints its help and then such an error.
 `cli.Options` can set the version and supply the environment variables
-from elsewhere than the process environment. Build a new command with
+from elsewhere than the process environment with `Getenv`. With `Getenv`
+set, `aopctl` reads a config file only when `--config` or `AOPCTL_CONFIG`
+names one, so a config file at the default path can't override the values
+the tool supplies. `Resolve` replaces the 1Password CLI for `op://`
+references, for example with the 1Password SDK. `aopctl` prints the errors
+it returns, so keep secrets out of them. `aopctl`'s `--config` and
+`--profile` flags would replace a tool's own persistent flags of the same
+names under it, so a tool that has them sets `NoConfigFlags`, and
+`AOPCTL_CONFIG` and `AOPCTL_PROFILE` select the file and profile instead.
+Build a new command with
 `cli.NewCommand` for each run, because cobra keeps flag values such as
 `--yes` between runs.
 

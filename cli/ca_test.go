@@ -60,7 +60,7 @@ func parseItem(t *testing.T, stdout string) (item, map[string]itemField) {
 func parseItemPair(t *testing.T, stdout string) (*x509.Certificate, crypto.Signer) {
 	t.Helper()
 	_, fields := parseItem(t, stdout)
-	cert, key, err := loadCA(fields["ca_cert"].Value, fields["ca_key"].Value)
+	cert, key, err := envApp().loadCA(fields["ca_cert"].Value, fields["ca_key"].Value)
 	require.NoError(t, err, "item template pair")
 	return cert, key
 }
@@ -153,12 +153,13 @@ func TestCAShow(t *testing.T) {
 		}
 	})
 
-	t.Run("terminal stdin", func(t *testing.T) {
+	t.Run("terminal stdin without a CA certificate", func(t *testing.T) {
 		h := newHarness(t)
+		delete(h.env, "AOP_CA_CERT")
 		h.stdinTTY = true
 		code, _, stderr := h.run("ca", "show")
 		assert.Equal(t, 1, code, "exit code; stderr:\n%s", stderr)
-		assert.Contains(t, stderr, "stdin")
+		assert.Equal(t, "aopctl: ca show reads the CA certificate PEM from stdin or AOP_CA_CERT: pipe it in, for example with op read, set AOP_CA_CERT, or set ca_cert in a config file\n", stderr, "stderr")
 	})
 
 	t.Run("namespace without secret", func(t *testing.T) {

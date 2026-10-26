@@ -2,8 +2,9 @@
 // Origin Pulls (AOP) and the per-hostname and zone-level leaf certificates
 // it issues.
 //
-// Secrets come from environment variables, for example through
-// "op run --env-file", and keys are never written to disk.
+// Settings come from a YAML config file or from environment variables.
+// aopctl reads 1Password secret references in them with the 1Password CLI,
+// and never writes keys to disk.
 package main
 
 import (

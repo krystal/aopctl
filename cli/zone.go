@@ -61,13 +61,13 @@ func describeInUse(zone *aopctl.ZoneStatusReport) string {
 
 // printZoneSummary prints the setting, one line per certificate and the
 // certificate in use.
-func printZoneSummary(w io.Writer, zone *aopctl.ZoneStatusReport) {
+func (a *app) printZoneSummary(w io.Writer, zone *aopctl.ZoneStatusReport) {
 	fmt.Fprintf(w, "Zone-level AOP: %s\nZone certificates:\n", formatSetting(zone.Enabled))
 	if len(zone.Certificates) == 0 {
 		fmt.Fprintln(w, "  none")
 	}
 	for _, c := range zone.Certificates {
-		fmt.Fprintf(w, "  %s  status %s, uploaded %s, signed by AOP_CA_CERT: %s\n", c.ID, c.Status, c.UploadedOn, yesNo(c.SignedByCA))
+		fmt.Fprintf(w, "  %s  status %s, uploaded %s, signed by %s: %s\n", c.ID, c.Status, c.UploadedOn, a.name(settingCACert), yesNo(c.SignedByCA))
 	}
 	fmt.Fprintf(w, "In use: %s\n", describeInUse(zone))
 }
@@ -80,14 +80,14 @@ func yesNo(b bool) string {
 }
 
 // describeFallback names the certificate Cloudflare uses after a prune.
-func describeFallback(after *aopctl.CertificateInfo, ok bool) string {
+func (a *app) describeFallback(after *aopctl.CertificateInfo, ok bool) string {
 	switch {
 	case !ok:
 		return "unknown, the remaining active certificates' uploaded_on values are missing, unreadable or equal"
 	case after == nil:
 		return "none, no active certificate remains"
 	}
-	return fmt.Sprintf("%s (derived: the newest remaining active certificate), signed by AOP_CA_CERT: %s", after.ID, yesNo(after.SignedByCA))
+	return fmt.Sprintf("%s (derived: the newest remaining active certificate), signed by %s: %s", after.ID, a.name(settingCACert), yesNo(after.SignedByCA))
 }
 
 func printLeaf(w io.Writer, leaf *x509.Certificate) {
@@ -120,7 +120,7 @@ func newZoneIssueCmd(a *app) *cobra.Command {
 	cmd.Flags().IntVar(&o.days, "days", 365, "validity in days")
 	cmd.Flags().StringVar(&o.name, "name", "aopctl AOP client", "leaf common name")
 	dryRunFlag(cmd, &o.dryRun, "show the plan without changing anything")
-	cmd.Flags().BoolVar(&o.yes, "yes", false, "replace a certificate AOP_CA_CERT did not sign without asking for confirmation")
+	cmd.Flags().BoolVar(&o.yes, "yes", false, "replace a certificate the configured CA did not sign without asking for confirmation")
 	timeoutFlag(cmd, &o.timeout)
 	return cmd
 }
@@ -140,19 +140,23 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	if err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caKeyPEM, err := a.requireEnv("AOP_CA_KEY")
+	caKeyPEM, err := a.require(cmd, settingCAKey)
 	if err != nil {
 		return err
 	}
-	caCert, caKey, err := loadCA(caCertPEM, caKeyPEM)
+	caCert, caKey, err := a.loadCA(caCertPEM, caKeyPEM)
+	if err != nil {
+		return err
+	}
+	configured, err := a.configuredZone(cmd, requested)
 	if err != nil {
 		return err
 	}
@@ -160,7 +164,7 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zoneID, err := a.zoneCommandZone(ctx, token, requested)
+	zoneID, err := a.zoneCommandZone(ctx, token, requested, configured)
 	if err != nil {
 		return err
 	}
@@ -182,11 +186,11 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 
 	zone := plan.Zone()
 	printLeaf(stderr, plan.Leaf())
-	printZoneSummary(stderr, zone)
+	a.printZoneSummary(stderr, zone)
 	replaces := plan.ReplacesOtherCA()
 	switch {
 	case replaces:
-		fmt.Fprintln(stderr, "Warning: AOP_CA_CERT did not sign the certificate in use, or aopctl cannot tell which one that is. Once the new certificate is active, Cloudflare presents it to every origin without a per-hostname certificate, and origins that trust only the other CA reject Cloudflare's requests.")
+		fmt.Fprintf(stderr, "Warning: %s did not sign the certificate in use, or aopctl cannot tell which one that is. Once the new certificate is active, Cloudflare presents it to every origin without a per-hostname certificate, and origins that trust only the other CA reject Cloudflare's requests.\n", a.name(settingCACert))
 	case zone.Enabled:
 		fmt.Fprintln(stderr, "Once the new certificate is active, Cloudflare presents it to every origin without a per-hostname certificate.")
 	default:
@@ -249,7 +253,7 @@ func (a *app) zoneIssue(cmd *cobra.Command, o *zoneIssueOptions) error {
 		fmt.Fprintf(stdout, "  %s --cert-id %s\n", a.zoneCmd(zoneID, "zone prune"), strings.Join(ownIDs, " --cert-id "))
 	}
 	if len(otherIDs) > 0 {
-		fmt.Fprintf(stdout, "  %s\n", otherCANote(otherIDs))
+		fmt.Fprintf(stdout, "  %s\n", a.otherCANote(otherIDs))
 		fmt.Fprintf(stdout, "  %s --cert-id %s\n", a.zoneCmd(zoneID, "zone prune"), strings.Join(otherIDs, " --cert-id "))
 	}
 	return nil
@@ -288,15 +292,19 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 	if err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caCert, err := parseCACert(caCertPEM)
+	caCert, err := a.parseCACert(caCertPEM)
+	if err != nil {
+		return err
+	}
+	configured, err := a.configuredZone(cmd, requested)
 	if err != nil {
 		return err
 	}
@@ -304,7 +312,7 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zoneID, err := a.zoneCommandZone(ctx, token, requested)
+	zoneID, err := a.zoneCommandZone(ctx, token, requested, configured)
 	if err != nil {
 		return err
 	}
@@ -326,8 +334,8 @@ func (a *app) zoneEnable(cmd *cobra.Command, o *zoneEnableOptions) error {
 	}
 
 	newest, _ := zone.NewestActive()
-	printZoneSummary(stderr, zone)
-	fmt.Fprintf(stderr, "Once enabled, Cloudflare presents certificate %s, the newest active one, to every origin in the zone without a per-hostname certificate. Origins that do not trust AOP_CA_CERT reject those requests.\n", newest.ID)
+	a.printZoneSummary(stderr, zone)
+	fmt.Fprintf(stderr, "Once enabled, Cloudflare presents certificate %s, the newest active one, to every origin in the zone without a per-hostname certificate. Origins that do not trust %s reject those requests.\n", newest.ID, a.name(settingCACert))
 	if o.dryRun {
 		fmt.Fprintln(stderr, "Dry run: nothing changed.")
 		return nil
@@ -377,18 +385,26 @@ func (a *app) zoneStatus(cmd *cobra.Command, o *zoneStatusOptions) error {
 	if err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
 	var caCert *x509.Certificate
-	if v := strings.TrimSpace(a.getenv("AOP_CA_CERT")); v != "" {
-		if caCert, err = parseCACert(v); err != nil {
+	caCertPEM, err := a.lookup(cmd, settingCACert)
+	if err != nil {
+		return err
+	}
+	if caCertPEM != "" {
+		if caCert, err = a.parseCACert(caCertPEM); err != nil {
 			return err
 		}
 	}
+	configured, err := a.configuredZone(cmd, requested)
+	if err != nil {
+		return err
+	}
 
-	zoneID, err := a.zoneCommandZone(cmd.Context(), token, requested)
+	zoneID, err := a.zoneCommandZone(cmd.Context(), token, requested, configured)
 	if err != nil {
 		return err
 	}
@@ -424,11 +440,12 @@ func (a *app) zoneStatus(cmd *cobra.Command, o *zoneStatusOptions) error {
 		fmt.Fprintf(stdout, "    expires:   %s\n", describeExpiry(c.ExpiresOn, c.X509, now))
 		fmt.Fprintf(stdout, "    uploaded:  %s\n", c.UploadedOn)
 		fmt.Fprintf(stdout, "    enabled:   %s (Cloudflare's per-certificate field, undocumented)\n", formatEnabled(c.Enabled))
-		signed := "unknown (AOP_CA_CERT not set)"
+		caName := a.name(settingCACert)
+		signed := "unknown (" + caName + " not set)"
 		if caCert != nil {
 			signed = yesNo(c.SignedByCA)
 		}
-		fmt.Fprintf(stdout, "    signed by AOP_CA_CERT: %s\n", signed)
+		fmt.Fprintf(stdout, "    signed by %s: %s\n", caName, signed)
 	}
 	fmt.Fprintf(stdout, "In use: %s\n", describeInUse(report))
 	if active > 1 {
@@ -488,15 +505,19 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caCert, err := parseCACert(caCertPEM)
+	caCert, err := a.parseCACert(caCertPEM)
+	if err != nil {
+		return err
+	}
+	configured, err := a.configuredZone(cmd, requested)
 	if err != nil {
 		return err
 	}
@@ -504,7 +525,7 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zoneID, err := a.zoneCommandZone(ctx, token, requested)
+	zoneID, err := a.zoneCommandZone(ctx, token, requested, configured)
 	if err != nil {
 		return err
 	}
@@ -538,15 +559,16 @@ func (a *app) zonePrune(cmd *cobra.Command, o *zonePruneOptions) error {
 				t.ID, t.X509.Subject.CommonName, t.X509.NotAfter.UTC().Format(time.RFC3339), state)
 		}
 		if inUse != nil && slices.ContainsFunc(targets, func(t aopctl.PruneTarget) bool { return t.ID == inUse.ID }) {
-			fmt.Fprintf(stderr, "After the deletes, Cloudflare uses: %s\n", describeFallback(plan.InUseAfter()))
+			fmt.Fprintf(stderr, "After the deletes, Cloudflare uses: %s\n", a.describeFallback(plan.InUseAfter()))
 		}
 		if plan.ReplacesOtherCA() {
 			after, ok := plan.InUseAfter()
+			ca := a.name(settingCACert)
 			switch {
 			case !ok:
-				fmt.Fprintln(stderr, "Warning: aopctl cannot tell which certificate Cloudflare uses after the deletes. If AOP_CA_CERT did not sign it, origins that trust only AOP_CA_CERT reject Cloudflare's requests.")
+				fmt.Fprintf(stderr, "Warning: aopctl cannot tell which certificate Cloudflare uses after the deletes. If %s did not sign it, origins that trust only %s reject Cloudflare's requests.\n", ca, ca)
 			default:
-				fmt.Fprintf(stderr, "Warning: after the deletes, Cloudflare uses certificate %s for every origin without a per-hostname certificate. AOP_CA_CERT did not sign it, so origins that trust only AOP_CA_CERT reject Cloudflare's requests.\n", after.ID)
+				fmt.Fprintf(stderr, "Warning: after the deletes, Cloudflare uses certificate %s for every origin without a per-hostname certificate. %s did not sign it, so origins that trust only %s reject Cloudflare's requests.\n", after.ID, ca, ca)
 			}
 		}
 	}

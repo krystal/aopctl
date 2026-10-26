@@ -2,8 +2,9 @@
 // for Cloudflare Authenticated Origin Pulls (AOP) and the per-hostname and
 // zone-level leaf certificates it issues.
 //
-// Secrets come from environment variables, for example through
-// "op run --env-file", and keys are never written to disk.
+// Settings come from a YAML config file or from environment variables.
+// aopctl reads 1Password secret references in them with the 1Password CLI,
+// and never writes keys to disk.
 //
 // Run is the entry point of the aopctl binary. Another cobra command can
 // mount aopctl as a subcommand with NewCommand and map the error its
@@ -28,22 +29,51 @@ import (
 	"github.com/krystal/aopctl/aopctl"
 )
 
-const rootLong = `aopctl manages a dedicated client CA for Cloudflare Authenticated Origin
+// rootLong is the root command's help. configFlags says whether aopctl has
+// its --config and --profile flags.
+func rootLong(configFlags bool) string {
+	configFlag, profileFlag := "--config, ", "--profile or "
+	if !configFlags {
+		configFlag, profileFlag = "", ""
+	}
+	return `aopctl manages a dedicated client CA for Cloudflare Authenticated Origin
 Pulls (AOP) and the per-hostname and zone-level leaf certificates it issues.
 
-Secrets come from environment variables, for example through
-"op run --env-file", and keys are never written to disk.
+Settings come from a YAML config file, or from environment variables when no
+config file is in use. A value can be a 1Password secret reference, such as
+op://vault/item/field, which aopctl reads with the 1Password CLI, op. Keys
+are never written to disk.
 
-Environment:
-  AOP_CA_CERT           CA certificate PEM
-  AOP_CA_KEY            CA private key PEM (PKCS#8), for hostname and zone issue
-  CLOUDFLARE_API_TOKEN  Zone > SSL and Certificates > Edit, and Zone > Zone >
-                        Read to look up zones
-  CLOUDFLARE_ZONE_ID    the zone's ID, optional: --zone takes precedence, and
-                        without either, hostname commands look up each
-                        hostname's zone
-  AOP_HOSTNAMES         hostnames this CA serves across all zones, comma- or
-                        space-separated, for the hostname commands`
+Config file:
+  The first of ` + configFlag + `AOPCTL_CONFIG and, if it exists,
+  ` + defaultConfigHint() + `. For example:
+
+    cloudflare_api_token: op://vault/cloudflare/credential
+    profiles:
+      production:
+        ca_cert: op://vault/aop-production/ca_cert
+        ca_key: op://vault/aop-production/ca_key
+        hostnames: [app.example.com, admin.example.com]
+
+  Top-level settings apply to every profile, which can override them. Select
+  a profile with ` + profileFlag + `AOPCTL_PROFILE. A config file in use is
+  the only source of settings, but cloudflare_api_token falls back to
+  CLOUDFLARE_API_TOKEN.
+
+Settings, as config file keys and environment variables:
+  ca_cert               AOP_CA_CERT: CA certificate PEM
+  ca_key                AOP_CA_KEY: CA private key PEM (PKCS#8), for hostname
+                        and zone issue
+  cloudflare_api_token  CLOUDFLARE_API_TOKEN: Zone > SSL and Certificates >
+                        Edit, and Zone > Zone > Read to look up zones
+  cloudflare_zone_id    CLOUDFLARE_ZONE_ID: the zone's ID, optional: --zone
+                        takes precedence, and without either, hostname
+                        commands look up each hostname's zone
+  hostnames             AOP_HOSTNAMES: hostnames this CA serves across all
+                        zones, for the hostname commands. A list in the
+                        config file, comma- or space-separated in the
+                        environment`
+}
 
 // modulePath is the module whose version aopctl reports.
 const modulePath = "github.com/krystal/aopctl"
@@ -56,10 +86,22 @@ type Options struct {
 	// mounts aopctl reports aopctl's version rather than its own.
 	Version string
 
-	// Getenv reads the environment variables aopctl takes its secrets and
-	// hostnames from. Nil means os.Getenv. A command that mounts aopctl can
-	// supply the values from elsewhere.
+	// Getenv reads the environment variables aopctl takes its settings
+	// from. Nil means os.Getenv. A command that mounts aopctl can supply the
+	// values from elsewhere, and then aopctl only reads a config file that
+	// --config or AOPCTL_CONFIG names.
 	Getenv func(string) string
+
+	// Resolve reads a 1Password secret reference, a setting's value that
+	// starts with "op://". Nil means the 1Password CLI, op. aopctl prints
+	// the errors it returns, so they must not hold secrets.
+	Resolve func(ctx context.Context, ref string) (string, error)
+
+	// NoConfigFlags leaves out aopctl's --config and --profile flags, for a
+	// command that mounts aopctl and has persistent flags with those names,
+	// which aopctl's would otherwise replace under it. AOPCTL_CONFIG and
+	// AOPCTL_PROFILE then select the config file and profile.
+	NoConfigFlags bool
 }
 
 // NewCommand returns the aopctl command. Add it to another cobra command to
@@ -149,12 +191,38 @@ func helpArgs(cmd *cobra.Command, args []string) error {
 }
 
 type app struct {
-	getenv func(string) string
+	getenv  func(string) string
+	resolve func(ctx context.Context, ref string) (string, error)
+	// configDir returns the default config file's directory. Nil means no
+	// default config file.
+	configDir func() (string, error)
+
+	// configFlag and profileFlag are --config and --profile, unless
+	// noConfigFlags leaves the flags out.
+	configFlag    string
+	profileFlag   string
+	noConfigFlags bool
+
+	// The config file and config, read once, and whether a command
+	// printed the config file's warnings and the token note.
+	fileRead   bool
+	file       *configFile
+	fileErr    error
+	cfg        *config
+	cfgErr     error
+	warned     bool
+	tokenNoted bool
+	// zoneFromReference is the configured zone ID when it was read from a
+	// reference, which printed commands leave out.
+	zoneFromReference string
 
 	// stdoutIsTerminal and stdinIsTerminal check the command's output and
-	// input.
+	// input, and stdinIsFile whether its input is a regular file or a
+	// device such as os.DevNull, which can be empty without anything
+	// having failed, unlike a pipe.
 	stdoutIsTerminal func(io.Writer) bool
 	stdinIsTerminal  func(io.Reader) bool
+	stdinIsFile      func(io.Reader) bool
 	// openTTY opens the terminal for confirmation prompts: the controlling
 	// terminal, or the console on Windows. Either works under op run
 	// whatever stdin and stdout are.
@@ -173,14 +241,24 @@ type app struct {
 }
 
 func newApp(opts Options) *app {
-	getenv := opts.Getenv
+	getenv, configDir := opts.Getenv, defaultConfigDir
 	if getenv == nil {
 		getenv = os.Getenv
+	} else {
+		configDir = nil
+	}
+	resolve := opts.Resolve
+	if resolve == nil {
+		resolve = opRead
 	}
 	return &app{
 		getenv:           getenv,
+		resolve:          resolve,
+		configDir:        configDir,
+		noConfigFlags:    opts.NoConfigFlags,
 		stdoutIsTerminal: func(w io.Writer) bool { return isTerminal(w) },
 		stdinIsTerminal:  func(r io.Reader) bool { return isTerminal(r) },
+		stdinIsFile:      func(r io.Reader) bool { return isFile(r) },
 		openTTY:          openTerminal,
 		now:              time.Now,
 		version:          resolveVersion(opts.Version, debug.ReadBuildInfo),
@@ -228,22 +306,37 @@ func isTerminal(v any) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
+// isFile reports whether v is a regular file or a character device, such
+// as os.DevNull. Only an *os.File can be one.
+func isFile(v any) bool {
+	f, ok := v.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && (info.Mode().IsRegular() || info.Mode()&os.ModeCharDevice != 0)
+}
+
 // commandPath is how printed commands start: "aopctl", or the full path
-// when aopctl is mounted under another command.
+// when aopctl is mounted under another command, and the --config and
+// --profile flags given.
 func (a *app) commandPath() string {
-	return a.root.CommandPath()
+	return a.root.CommandPath() + a.configFlags()
 }
 
 func newRootCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "aopctl",
 		Short:   "Manage Cloudflare Authenticated Origin Pulls certificates",
-		Long:    rootLong,
+		Long:    rootLong(!a.noConfigFlags),
 		Version: a.version,
 		Args:    noArgs,
 		RunE:    helpUsage,
 	}
 	a.root = cmd
+	if !a.noConfigFlags {
+		a.addConfigFlags(cmd)
+	}
 	cmd.SetVersionTemplate("aopctl {{.Version}}\n")
 	cmd.SetErrPrefix("aopctl:")
 	// Children inherit these, so they apply when aopctl is mounted too.
@@ -252,6 +345,14 @@ func newRootCmd(a *app) *cobra.Command {
 	cmd.AddCommand(newCACmd(a), newHostnameCmd(a), newZoneCmd(a), newVersionCmd(a))
 	silenceUsage(cmd)
 	return cmd
+}
+
+// addConfigFlags adds the --config and --profile flags to the root cmd.
+func (a *app) addConfigFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default")
+	cmd.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "profile in the config file")
+	_ = cmd.MarkPersistentFlagFilename("config", "yaml", "yml")
+	_ = cmd.RegisterFlagCompletionFunc("profile", a.completeProfiles)
 }
 
 // newGroupCmd returns a command that only holds subcommands.
@@ -367,12 +468,4 @@ func validateTimeout(timeout time.Duration) error {
 		return usagef("--timeout must be positive, got %s", timeout)
 	}
 	return nil
-}
-
-func (a *app) requireEnv(name string) (string, error) {
-	v := strings.TrimSpace(a.getenv(name))
-	if v == "" {
-		return "", fmt.Errorf("%s is not set", name)
-	}
-	return v, nil
 }

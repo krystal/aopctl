@@ -11,7 +11,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -34,33 +33,37 @@ func newHostnameCmd(a *app) *cobra.Command {
 }
 
 // hostnameFlag adds --hostname, which takes comma-separated lists and
-// completes from AOP_HOSTNAMES.
+// completes from the configured hostnames.
 func (a *app) hostnameFlag(cmd *cobra.Command, p *[]string, usage string) {
 	cmd.Flags().StringSliceVar(p, "hostname", nil, usage)
 	_ = cmd.RegisterFlagCompletionFunc("hostname", a.completeHostnames)
 }
 
-// completeHostnames offers the AOP_HOSTNAMES entries. It never calls the
-// API, so completion needs no token.
+// completeHostnames offers the configured hostnames. It never calls the
+// API or reads a secret, so completion needs no token.
 func (a *app) completeHostnames(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
-	return a.envHostnames(), cobra.ShellCompDirectiveNoFileComp
+	hosts, err := a.configuredHostnames()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return hosts, cobra.ShellCompDirectiveNoFileComp
 }
 
-// envHostnames splits AOP_HOSTNAMES on commas and whitespace.
-func (a *app) envHostnames() []string {
-	return strings.FieldsFunc(a.getenv("AOP_HOSTNAMES"), func(r rune) bool {
-		return r == ',' || unicode.IsSpace(r)
-	})
-}
-
-// hostnames returns the --hostname flags, or AOP_HOSTNAMES when no flag is
-// given, normalized and deduplicated. flags is nil only when no flag is
-// given: --hostname "" sets it to an empty list, which must not fall back
-// to AOP_HOSTNAMES.
-func (a *app) hostnames(flags []string) ([]string, error) {
+// hostnames returns the --hostname flags, or the configured hostnames when
+// no flag is given, normalized and deduplicated. flags is nil only when no
+// flag is given: --hostname "" sets it to an empty list, which must not
+// fall back to the configured hostnames. It reads the config for cmd, which
+// prints the config file's warnings first.
+func (a *app) hostnames(cmd *cobra.Command, flags []string) ([]string, error) {
+	if _, err := a.commandConfig(cmd); err != nil {
+		return nil, err
+	}
 	entries := flags
 	if entries == nil {
-		entries = a.envHostnames()
+		var err error
+		if entries, err = a.configuredHostnames(); err != nil {
+			return nil, err
+		}
 	}
 	hosts, err := aopctl.NormalizeHostnames(entries)
 	if err != nil {
@@ -77,11 +80,14 @@ func validateCertID(id string) error {
 	return nil
 }
 
-func requireHostnames(hosts []string) error {
-	if len(hosts) == 0 {
-		return errors.New("no hostnames: set AOP_HOSTNAMES or pass --hostname")
+func (a *app) requireHostnames(hosts []string) error {
+	if len(hosts) > 0 {
+		return nil
 	}
-	return nil
+	if c, err := a.config(); err == nil && c.file != nil {
+		return fmt.Errorf("no hostnames: set %s in %s or pass --hostname", settingHostnames.key, c.where())
+	}
+	return fmt.Errorf("no hostnames: set %s or pass --hostname", settingHostnames.env)
 }
 
 func hostnameFlags(hosts []string) string {
@@ -99,17 +105,18 @@ func formatEnabled(enabled *bool) string {
 	return fmt.Sprint(*enabled)
 }
 
-// otherCANote precedes a printed command for certificates AOP_CA_CERT did
-// not sign, which hostname associate and hostname prune refuse.
-func otherCANote(ids []string) string {
-	return fmt.Sprintf("AOP_CA_CERT did not sign %s, so run the next command with AOP_CA_CERT set to the CA that did. During a CA rotation, that is the old CA.", strings.Join(ids, ", "))
+// otherCANote precedes a printed command for certificates the configured
+// CA did not sign, which hostname associate and hostname prune refuse.
+func (a *app) otherCANote(ids []string) string {
+	ca := a.name(settingCACert)
+	return fmt.Sprintf("%s did not sign %s, so run the next command with %s set to the CA that did. During a CA rotation, that is the old CA.", ca, strings.Join(ids, ", "), ca)
 }
 
-// cliError rewrites library errors to name the command's inputs: the
-// AOP_CA_* variables, flags and follow-up commands in the zone.
+// cliError rewrites library errors to name the command's inputs: the CA
+// settings, flags and follow-up commands in the zone.
 func (a *app) cliError(err error, zoneID string) error {
 	if e, ok := errors.AsType[*aopctl.NotSignedError](err); ok {
-		return fmt.Errorf("certificate %s is not signed by AOP_CA_CERT", e.CertID)
+		return fmt.Errorf("certificate %s is not signed by %s", e.CertID, a.name(settingCACert))
 	}
 	if _, ok := errors.AsType[*aopctl.CAExpiryError](err); ok {
 		return fmt.Errorf("%w: use a smaller --days or rotate the CA", err)
@@ -121,7 +128,7 @@ func (a *app) cliError(err error, zoneID string) error {
 		return fmt.Errorf("%w, so run %s before retrying", err, a.zoneCmd(zoneID, "hostname status"))
 	}
 	if errors.Is(err, aopctl.ErrKeyMismatch) {
-		return errors.New("AOP_CA_KEY does not match the certificate in AOP_CA_CERT")
+		return a.keyMismatchError()
 	}
 	return err
 }
@@ -183,7 +190,7 @@ func newHostnameIssueCmd(a *app) *cobra.Command {
 		},
 	}
 	zoneFlag(cmd, &o.zone, hostnameZoneUsage)
-	a.hostnameFlag(cmd, &o.hostnames, "hostnames to point at the new leaf (repeatable or comma-separated, replaces AOP_HOSTNAMES)")
+	a.hostnameFlag(cmd, &o.hostnames, "hostnames to point at the new leaf (repeatable or comma-separated, replaces the configured hostnames)")
 	keyTypeFlag(cmd, &o.keyType)
 	cmd.Flags().IntVar(&o.days, "days", 365, "validity in days")
 	cmd.Flags().StringVar(&o.name, "name", "aopctl AOP client", "leaf common name")
@@ -207,26 +214,30 @@ func (a *app) hostnameIssue(cmd *cobra.Command, o *hostnameIssueOptions) error {
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
-	if err := requireHostnames(hosts); err != nil {
+	if err := a.requireHostnames(hosts); err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caKeyPEM, err := a.requireEnv("AOP_CA_KEY")
+	caKeyPEM, err := a.require(cmd, settingCAKey)
 	if err != nil {
 		return err
 	}
-	caCert, caKey, err := loadCA(caCertPEM, caKeyPEM)
+	caCert, caKey, err := a.loadCA(caCertPEM, caKeyPEM)
+	if err != nil {
+		return err
+	}
+	zoneID, err := a.configuredZone(cmd, zone)
 	if err != nil {
 		return err
 	}
@@ -234,15 +245,15 @@ func (a *app) hostnameIssue(cmd *cobra.Command, o *hostnameIssueOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zones, err := a.hostnameZones(ctx, token, zone, hosts, o.hostnames != nil)
+	zones, err := a.hostnameZones(ctx, token, zone, zoneID, hosts, o.hostnames != nil)
 	if err != nil {
 		return err
 	}
-	target, err := writeZone("hostname issue", zones)
+	target, err := a.writeZone("hostname issue", zones)
 	if err != nil {
 		return err
 	}
-	zoneID := target.zone.ID
+	zoneID = target.zone.ID
 	cf, err := a.newClient(token, zoneID)
 	if err != nil {
 		return err
@@ -305,7 +316,7 @@ func (a *app) hostnameIssue(cmd *cobra.Command, o *hostnameIssueOptions) error {
 		fmt.Fprintf(stdout, "  %s --cert-id %s%s\n", a.zoneCmd(zoneID, "hostname prune"), strings.Join(ownIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	if len(otherIDs) > 0 {
-		fmt.Fprintf(stdout, "  %s\n", otherCANote(otherIDs))
+		fmt.Fprintf(stdout, "  %s\n", a.otherCANote(otherIDs))
 		fmt.Fprintf(stdout, "  %s --cert-id %s%s\n", a.zoneCmd(zoneID, "hostname prune"), strings.Join(otherIDs, " --cert-id "), hostnameFlags(planHosts))
 	}
 	return nil
@@ -359,7 +370,7 @@ func (a *app) reportRollout(w io.Writer, r *aopctl.HostnameRolloutError, zoneID 
 	fmt.Fprintln(w, "To roll back, run:")
 	for _, id := range oldIDs {
 		if !r.SignedByCA[id] {
-			fmt.Fprintf(w, "  %s\n", otherCANote([]string{id}))
+			fmt.Fprintf(w, "  %s\n", a.otherCANote([]string{id}))
 		}
 		fmt.Fprintf(w, "  %s --cert-id %s%s\n", associate, id, hostnameFlags(byID[id]))
 	}
@@ -394,7 +405,7 @@ func newHostnameAssociateCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&o.certID, "cert-id", "", "certificate to point the hostnames at (required)")
 	zoneFlag(cmd, &o.zone, hostnameZoneUsage)
-	a.hostnameFlag(cmd, &o.hostnames, "hostnames to point at the certificate (repeatable or comma-separated, replaces AOP_HOSTNAMES)")
+	a.hostnameFlag(cmd, &o.hostnames, "hostnames to point at the certificate (repeatable or comma-separated, replaces the configured hostnames)")
 	dryRunFlag(cmd, &o.dryRun, "show the plan without changing anything")
 	timeoutFlag(cmd, &o.timeout)
 	return cmd
@@ -415,22 +426,26 @@ func (a *app) hostnameAssociate(cmd *cobra.Command, o *hostnameAssociateOptions)
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
-	if err := requireHostnames(hosts); err != nil {
+	if err := a.requireHostnames(hosts); err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caCert, err := parseCACert(caCertPEM)
+	caCert, err := a.parseCACert(caCertPEM)
+	if err != nil {
+		return err
+	}
+	zoneID, err := a.configuredZone(cmd, zone)
 	if err != nil {
 		return err
 	}
@@ -438,11 +453,11 @@ func (a *app) hostnameAssociate(cmd *cobra.Command, o *hostnameAssociateOptions)
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zones, err := a.hostnameZones(ctx, token, zone, hosts, o.hostnames != nil)
+	zones, err := a.hostnameZones(ctx, token, zone, zoneID, hosts, o.hostnames != nil)
 	if err != nil {
 		return err
 	}
-	target, err := writeZone("hostname associate", zones)
+	target, err := a.writeZone("hostname associate", zones)
 	if err != nil {
 		return err
 	}
@@ -487,7 +502,7 @@ func newHostnameStatusCmd(a *app) *cobra.Command {
 		},
 	}
 	zoneFlag(cmd, &o.zone, hostnameZoneUsage)
-	a.hostnameFlag(cmd, &o.hostnames, "hostnames to report (repeatable or comma-separated, replaces AOP_HOSTNAMES)")
+	a.hostnameFlag(cmd, &o.hostnames, "hostnames to report (repeatable or comma-separated, replaces the configured hostnames)")
 	return cmd
 }
 
@@ -497,23 +512,31 @@ func (a *app) hostnameStatus(cmd *cobra.Command, o *hostnameStatusOptions) error
 	if err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
 	var caCert *x509.Certificate
-	if v := strings.TrimSpace(a.getenv("AOP_CA_CERT")); v != "" {
-		if caCert, err = parseCACert(v); err != nil {
+	caCertPEM, err := a.lookup(cmd, settingCACert)
+	if err != nil {
+		return err
+	}
+	if caCertPEM != "" {
+		if caCert, err = a.parseCACert(caCertPEM); err != nil {
 			return err
 		}
 	}
+	zoneID, err := a.configuredZone(cmd, zone)
+	if err != nil {
+		return err
+	}
 
 	ctx := cmd.Context()
-	zones, err := a.hostnameZones(ctx, token, zone, hosts, o.hostnames != nil)
+	zones, err := a.hostnameZones(ctx, token, zone, zoneID, hosts, o.hostnames != nil)
 	if err != nil {
 		return err
 	}
@@ -540,15 +563,15 @@ func (a *app) hostnameStatus(cmd *cobra.Command, o *hostnameStatusOptions) error
 			fmt.Fprintln(stdout)
 		}
 		printZone(stdout, z.zone)
-		printHostnameReport(stdout, reports[i], caCert, now)
+		printHostnameReport(stdout, reports[i], caCert, a.name(settingCACert), now)
 	}
 	fmt.Fprintln(stdout, "Associations of hostnames you did not list cannot be discovered through the Cloudflare API.")
 	return nil
 }
 
 // printHostnameReport prints one zone's hostname certificates and the
-// listed hostnames' associations.
-func printHostnameReport(stdout io.Writer, report *aopctl.HostnameStatusReport, caCert *x509.Certificate, now time.Time) {
+// listed hostnames' associations. caName names the CA certificate setting.
+func printHostnameReport(stdout io.Writer, report *aopctl.HostnameStatusReport, caCert *x509.Certificate, caName string, now time.Time) {
 	fmt.Fprintf(stdout, "Certificates (%d of %d):\n", len(report.Certificates), aopctl.MaxHostnameCertificates)
 	for _, c := range report.Certificates {
 		fmt.Fprintf(stdout, "  %s\n    status:    %s\n", c.ID, c.Status)
@@ -560,14 +583,14 @@ func printHostnameReport(stdout io.Writer, report *aopctl.HostnameStatusReport, 
 			fmt.Fprintf(stdout, "    fingerprint: %s\n", aopctl.Fingerprint(c.X509))
 		}
 		fmt.Fprintf(stdout, "    expires:   %s\n", describeExpiry(c.ExpiresOn, c.X509, now))
-		signed := "unknown (AOP_CA_CERT not set)"
+		signed := "unknown (" + caName + " not set)"
 		if caCert != nil {
 			signed = "no"
 			if c.SignedByCA {
 				signed = "yes"
 			}
 		}
-		fmt.Fprintf(stdout, "    signed by AOP_CA_CERT: %s\n", signed)
+		fmt.Fprintf(stdout, "    signed by %s: %s\n", caName, signed)
 		using := "none of the listed hostnames"
 		if len(c.UsedBy) > 0 {
 			using = strings.Join(c.UsedBy, ", ")
@@ -621,7 +644,7 @@ func newHostnamePruneCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().StringArrayVar(&o.certIDs, "cert-id", nil, "certificate to delete (repeatable, required)")
 	zoneFlag(cmd, &o.zone, hostnameZoneUsage)
-	a.hostnameFlag(cmd, &o.hostnames, "hostnames to check before deleting (repeatable or comma-separated, replaces AOP_HOSTNAMES)")
+	a.hostnameFlag(cmd, &o.hostnames, "hostnames to check before deleting (repeatable or comma-separated, replaces the configured hostnames)")
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "delete without asking for confirmation")
 	timeoutFlag(cmd, &o.timeout)
 	return cmd
@@ -651,22 +674,26 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 	if err := validateTimeout(o.timeout); err != nil {
 		return err
 	}
-	hosts, err := a.hostnames(o.hostnames)
+	hosts, err := a.hostnames(cmd, o.hostnames)
 	if err != nil {
 		return err
 	}
-	if err := requireHostnames(hosts); err != nil {
+	if err := a.requireHostnames(hosts); err != nil {
 		return err
 	}
-	token, err := a.requireEnv("CLOUDFLARE_API_TOKEN")
+	token, err := a.require(cmd, settingToken)
 	if err != nil {
 		return err
 	}
-	caCertPEM, err := a.requireEnv("AOP_CA_CERT")
+	caCertPEM, err := a.require(cmd, settingCACert)
 	if err != nil {
 		return err
 	}
-	caCert, err := parseCACert(caCertPEM)
+	caCert, err := a.parseCACert(caCertPEM)
+	if err != nil {
+		return err
+	}
+	zoneID, err := a.configuredZone(cmd, zone)
 	if err != nil {
 		return err
 	}
@@ -674,15 +701,15 @@ func (a *app) hostnamePrune(cmd *cobra.Command, o *hostnamePruneOptions) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), o.timeout)
 	defer cancel()
 
-	zones, err := a.hostnameZones(ctx, token, zone, hosts, o.hostnames != nil)
+	zones, err := a.hostnameZones(ctx, token, zone, zoneID, hosts, o.hostnames != nil)
 	if err != nil {
 		return err
 	}
-	target, err := writeZone("hostname prune", zones)
+	target, err := a.writeZone("hostname prune", zones)
 	if err != nil {
 		return err
 	}
-	zoneID := target.zone.ID
+	zoneID = target.zone.ID
 	cf, err := a.newClient(token, zoneID)
 	if err != nil {
 		return err
