@@ -82,6 +82,7 @@ func TestConfigFile(t *testing.T) {
 		h.env["AOP_CA_CERT"], h.env["AOP_CA_KEY"] = other.certPEM, other.keyPEM
 		h.env["CLOUDFLARE_ZONE_ID"] = "ffffffffffffffffffffffffffffffff"
 		h.env["AOP_HOSTNAMES"] = hostD
+		h.env["CLOUDFLARE_API_TOKEN"] = "the environment's token"
 		h.fake.AddCert("old-1", h.ca.issue(t))
 		h.fake.SetAssoc(hostA, "old-1", new(true))
 		code, stdout, stderr := h.run("--profile", "prod", "hostname", "status")
@@ -93,7 +94,15 @@ func TestConfigFile(t *testing.T) {
 		for _, r := range h.fake.Recorded() {
 			assert.Contains(t, r.Path, "/zones/"+cftest.Zone+"/", "request outside the configured zone")
 		}
-		assert.Equal(t, "Warning: "+path+" is in use, so aopctl ignores AOP_CA_CERT, AOP_CA_KEY, CLOUDFLARE_ZONE_ID, AOP_HOSTNAMES from the environment.\n", stderr, "stderr")
+		assert.Equal(t, "Warning: "+path+" is in use, so aopctl ignores AOP_CA_CERT, AOP_CA_KEY, CLOUDFLARE_ZONE_ID, AOP_HOSTNAMES, CLOUDFLARE_API_TOKEN from the environment.\n", stderr, "stderr")
+	})
+
+	t.Run("an environment token alone is not warned about", func(t *testing.T) {
+		h, _ := configHarness(t, profileConfig)
+		h.env["CLOUDFLARE_API_TOKEN"] = "a token for other tools"
+		code, _, stderr := h.run("--profile", "prod", "hostname", "status")
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Empty(t, stderr, "stderr")
 	})
 
 	t.Run("printed commands carry the config flags and run as printed", func(t *testing.T) {
@@ -578,6 +587,19 @@ func TestCAShowConfig(t *testing.T) {
 		code, stdout, stderr := h.run("--profile", "prod", "ca", "show")
 		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stdout, "Fingerprint: "+vectorFingerprint)
+	})
+
+	t.Run("empty pipe", func(t *testing.T) {
+		// A failed op read piped into ca show must not describe the
+		// configured certificate instead.
+		h, _ := configHarness(t, profileConfig)
+		h.secrets[refCert] = vectorCA
+		h.stdinPipe = true
+		code, stdout, stderr := h.run("--profile", "prod", "ca", "show")
+		assert.Equal(t, 1, code, "exit code")
+		assert.Equal(t, "aopctl: stdin: no PEM block found\n", stderr, "stderr")
+		assert.Empty(t, stdout, "stdout")
+		assert.Empty(t, h.resolved, "references read")
 	})
 
 	t.Run("stdin wins", func(t *testing.T) {

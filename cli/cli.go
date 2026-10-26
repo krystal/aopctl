@@ -200,9 +200,10 @@ type app struct {
 	tokenNoted bool
 
 	// stdoutIsTerminal and stdinIsTerminal check the command's output and
-	// input.
+	// input, and stdinIsPipe whether its input is a pipe.
 	stdoutIsTerminal func(io.Writer) bool
 	stdinIsTerminal  func(io.Reader) bool
+	stdinIsPipe      func(io.Reader) bool
 	// openTTY opens the terminal for confirmation prompts: the controlling
 	// terminal, or the console on Windows. Either works under op run
 	// whatever stdin and stdout are.
@@ -237,6 +238,7 @@ func newApp(opts Options) *app {
 		configDir:        configDir,
 		stdoutIsTerminal: func(w io.Writer) bool { return isTerminal(w) },
 		stdinIsTerminal:  func(r io.Reader) bool { return isTerminal(r) },
+		stdinIsPipe:      func(r io.Reader) bool { return isPipe(r) },
 		openTTY:          openTerminal,
 		now:              time.Now,
 		version:          resolveVersion(opts.Version, debug.ReadBuildInfo),
@@ -284,6 +286,16 @@ func isTerminal(v any) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
+// isPipe reports whether v is a pipe. Only an *os.File can be one.
+func isPipe(v any) bool {
+	f, ok := v.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeNamedPipe != 0
+}
+
 // commandPath is how printed commands start: "aopctl", or the full path
 // when aopctl is mounted under another command, and the --config and
 // --profile flags given.
@@ -301,7 +313,7 @@ func newRootCmd(a *app) *cobra.Command {
 		RunE:    helpUsage,
 	}
 	a.root = cmd
-	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default path")
+	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default")
 	cmd.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "profile in the config file")
 	_ = cmd.MarkPersistentFlagFilename("config", "yaml", "yml")
 	_ = cmd.RegisterFlagCompletionFunc("profile", a.completeProfiles)

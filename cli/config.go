@@ -405,21 +405,26 @@ func (a *app) commandConfig(cmd *cobra.Command) (*config, error) {
 		for _, w := range c.file.warnings {
 			fmt.Fprintln(cmd.ErrOrStderr(), w)
 		}
-		if ignored := a.ignoredEnv(); len(ignored) > 0 {
+		if ignored := a.ignoredEnv(c); len(ignored) > 0 {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s is in use, so aopctl ignores %s from the environment.\n", c.file.path, strings.Join(ignored, ", "))
 		}
 	}
 	return c, nil
 }
 
-// ignoredEnv returns the environment variables set that a config file in
-// use replaces. The token is not one, as it falls back to the environment.
-func (a *app) ignoredEnv() []string {
+// ignoredEnv returns the environment variables set that the config file
+// in use replaces, such as those of an env file for op run. The token only
+// counts along with another, as it is often set for other tools, and the
+// config file replaces it only when it sets a token itself.
+func (a *app) ignoredEnv(c *config) []string {
 	var names []string
 	for _, s := range []setting{settingCACert, settingCAKey, settingZoneID, settingHostnames} {
 		if strings.TrimSpace(a.getenv(s.env)) != "" {
 			names = append(names, s.env)
 		}
+	}
+	if len(names) > 0 && strings.TrimSpace(a.getenv(settingToken.env)) != "" && strings.TrimSpace(c.settings.Token) != "" {
+		names = append(names, settingToken.env)
 	}
 	return names
 }

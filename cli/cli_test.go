@@ -74,6 +74,7 @@ type harness struct {
 	stdin     string
 	stdoutTTY bool
 	stdinTTY  bool
+	stdinPipe bool
 	openTTY   func() (io.ReadWriteCloser, error)
 	now       time.Time
 
@@ -159,6 +160,7 @@ func (h *harness) app() *app {
 		},
 		stdoutIsTerminal: func(io.Writer) bool { return h.stdoutTTY },
 		stdinIsTerminal:  func(io.Reader) bool { return h.stdinTTY },
+		stdinIsPipe:      func(io.Reader) bool { return h.stdinPipe },
 		openTTY:          h.openTTY,
 		baseURL:          h.srv.URL,
 		wait: func(ctx context.Context, _ time.Duration) error {
