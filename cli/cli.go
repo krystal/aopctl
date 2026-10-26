@@ -38,11 +38,20 @@ config file is in use. A value can be a 1Password secret reference, such as
 op://vault/item/field, which aopctl reads with the 1Password CLI, op. Keys
 are never written to disk.
 
-Config file, the first of --config, AOPCTL_CONFIG and, if it exists,
-  ` + defaultConfigHint() + `:
-  Top-level settings apply to every profile under "profiles", which override
-  them. Select a profile with --profile or AOPCTL_PROFILE. A config file in
-  use is the only source of settings, but cloudflare_api_token falls back to
+Config file:
+  The first of --config, AOPCTL_CONFIG and, if it exists,
+  ` + defaultConfigHint() + `. For example:
+
+    cloudflare_api_token: op://vault/cloudflare/credential
+    profiles:
+      production:
+        ca_cert: op://vault/aop-production/ca_cert
+        ca_key: op://vault/aop-production/ca_key
+        hostnames: [app.example.com, admin.example.com]
+
+  Top-level settings apply to every profile, which can override them. Select
+  a profile with --profile or AOPCTL_PROFILE. A config file in use is the
+  only source of settings, but cloudflare_api_token falls back to
   CLOUDFLARE_API_TOKEN.
 
 Settings, as config file keys and environment variables:
@@ -292,7 +301,7 @@ func newRootCmd(a *app) *cobra.Command {
 		RunE:    helpUsage,
 	}
 	a.root = cmd
-	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file (default: "+defaultConfigHint()+", if it exists)")
+	cmd.PersistentFlags().StringVar(&a.configFlag, "config", "", "config file, instead of AOPCTL_CONFIG or the default path")
 	cmd.PersistentFlags().StringVar(&a.profileFlag, "profile", "", "profile in the config file")
 	_ = cmd.MarkPersistentFlagFilename("config", "yaml", "yml")
 	_ = cmd.RegisterFlagCompletionFunc("profile", a.completeProfiles)

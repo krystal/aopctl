@@ -22,7 +22,7 @@ func isReference(v string) bool {
 	return strings.HasPrefix(v, referencePrefix)
 }
 
-var errOpNotFound = errors.New("the 1Password CLI (op) is not on PATH: install it, or run aopctl through op run")
+var errOpNotFound = errors.New("the 1Password CLI (op) is not on PATH: install it from https://developer.1password.com/docs/cli/ or add it to PATH")
 
 // opRead reads a 1Password secret reference with the 1Password CLI. op
 // gets no stdin: it asks for approval through the 1Password app, or uses

@@ -235,8 +235,8 @@ There is no default profile, so a command can't act on production by
 accident. A file without `profiles` holds the settings of one CA.
 
 A config file in use is the only source of settings: `aopctl` ignores
-`AOP_CA_CERT`, `AOP_CA_KEY`, `CLOUDFLARE_ZONE_ID` and `AOP_HOSTNAMES`. The
-exception is the token. When neither the profile nor the top level sets
+`AOP_CA_CERT`, `AOP_CA_KEY`, `CLOUDFLARE_ZONE_ID` and `AOP_HOSTNAMES`, and
+warns when any of them is set. The exception is the token. When neither the profile nor the top level sets
 `cloudflare_api_token`, `aopctl` uses `CLOUDFLARE_API_TOKEN` and says so on
 stderr. A profile's `hostnames` replaces the top-level list rather than adding
 to it.
@@ -379,7 +379,7 @@ Pin the fingerprint in the plugin's `clientCertFingerprints`. The plugin
 README explains when to [pin the CA or the client certificate][plugin-pin].
 
 `aopctl ca show` describes the CA certificate piped to stdin or, when nothing
-is piped in, the configured one. It prints the fingerprint to pin, the
+is piped in or stdin is empty, the configured one. It prints the fingerprint to pin, the
 validity and the key type, and warns when the certificate does not match the
 CA profile. With `--secret` it prints only the Secret:
 

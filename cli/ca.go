@@ -129,7 +129,7 @@ Next steps:
      %s ca show --secret <name>
      or, without ca_cert in a config file, with
      op read "op://<vault>/<item>/ca_cert" | %s ca show --secret <name>
-`, o.name, describeKey(cert.PublicKey), expires, fp, a.commandPath(), a.commandPath())
+`, o.name, describeKey(cert.PublicKey), expires, fp, a.commandPath(), a.root.CommandPath())
 	return nil
 }
 
@@ -190,8 +190,9 @@ func (a *app) caShow(cmd *cobra.Command, o *caShowOptions) error {
 	return nil
 }
 
-// showCert reads the CA certificate ca show describes: from stdin, unless
-// stdin is a terminal, and then the configured one.
+// showCert reads the CA certificate ca show describes: the one piped to
+// stdin, or the configured one when stdin is a terminal or empty, as
+// /dev/null is.
 func (a *app) showCert(cmd *cobra.Command) (*x509.Certificate, error) {
 	stdin := cmd.InOrStdin()
 	if !a.stdinIsTerminal(stdin) {
@@ -199,11 +200,13 @@ func (a *app) showCert(cmd *cobra.Command) (*x509.Certificate, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read stdin: %w", err)
 		}
-		cert, err := aopctl.ParseCertificatePEM(string(data))
-		if err != nil {
-			return nil, fmt.Errorf("stdin: %w", err)
+		if strings.TrimSpace(string(data)) != "" {
+			cert, err := aopctl.ParseCertificatePEM(string(data))
+			if err != nil {
+				return nil, fmt.Errorf("stdin: %w", err)
+			}
+			return cert, nil
 		}
-		return cert, nil
 	}
 	certPEM, err := a.lookup(cmd, settingCACert)
 	if err != nil {

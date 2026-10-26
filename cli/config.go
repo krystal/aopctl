@@ -148,7 +148,7 @@ func defaultConfigHint() string {
 	if runtime.GOOS == "windows" {
 		return `%AppData%\aopctl\config.yaml`
 	}
-	return "~/.config/aopctl/config.yaml, or under $XDG_CONFIG_HOME/aopctl"
+	return "$XDG_CONFIG_HOME/aopctl/config.yaml, where XDG_CONFIG_HOME defaults\n  to ~/.config"
 }
 
 // flagChanged reports whether the persistent flag name was given.
@@ -218,7 +218,7 @@ func (a *app) loadConfigFile() (*configFile, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&file.fileConfig); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("config file %s: %w", path, err)
+		return nil, fmt.Errorf("config file %s: %w", path, decodeError(err))
 	}
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -233,6 +233,58 @@ func (a *app) loadConfigFile() (*configFile, error) {
 		file.warnings = permissionWarnings(path, info.Mode(), &file.fileConfig)
 	}
 	return file, nil
+}
+
+var (
+	unknownKeyPattern = regexp.MustCompile(`^(line \d+: )field (\S+) not found in type cli\.(\w+)$`)
+	wrongTypePattern  = regexp.MustCompile(`^(line \d+: )cannot unmarshal !!(\w+)(?: .*)? into (\S+)$`)
+)
+
+// decodeError rewrites yaml.v3's errors about keys and types in the config
+// file's terms rather than Go's.
+func decodeError(err error) error {
+	typeErr, ok := errors.AsType[*yaml.TypeError](err)
+	if !ok {
+		return err
+	}
+	msgs := make([]string, len(typeErr.Errors))
+	for i, msg := range typeErr.Errors {
+		msgs[i] = rewriteDecodeError(msg)
+	}
+	return errors.New(strings.Join(msgs, "; "))
+}
+
+func rewriteDecodeError(msg string) string {
+	if m := unknownKeyPattern.FindStringSubmatch(msg); m != nil {
+		line, key := m[1], m[2]
+		for _, s := range []setting{settingCACert, settingCAKey, settingToken, settingZoneID, settingHostnames} {
+			if strings.EqualFold(key, s.env) {
+				return fmt.Sprintf("%sunknown key %q: use %s", line, key, s.key)
+			}
+		}
+		keys := "ca_cert, ca_key, cloudflare_api_token, cloudflare_zone_id or hostnames"
+		if m[3] == "fileConfig" {
+			keys = "ca_cert, ca_key, cloudflare_api_token, cloudflare_zone_id, hostnames or profiles"
+		}
+		return fmt.Sprintf("%sunknown key %q: want %s", line, key, keys)
+	}
+	if m := wrongTypePattern.FindStringSubmatch(msg); m != nil {
+		line, kind := m[1], map[string]string{"seq": "a list", "map": "a mapping"}[m[2]]
+		if kind == "" {
+			kind = "a single value"
+		}
+		switch m[3] {
+		case "[]string":
+			return line + "hostnames must be a list, such as [app.example.com, admin.example.com], not " + kind
+		case "string":
+			return line + "want a single value, not " + kind
+		case "map[string]cli.fileSettings":
+			return line + "profiles must map profile names to their settings, not " + kind
+		case "cli.fileSettings", "cli.fileConfig":
+			return line + "want settings, such as ca_cert: <value>, not " + kind
+		}
+	}
+	return msg
 }
 
 // permissionWarnings warns about a config file that other users can read
@@ -303,11 +355,11 @@ func (a *app) loadConfig() (*config, error) {
 		return nil, usagef("profile %s: %s has no profiles", profile, file.path)
 	case len(names) == 0:
 	case profile == "":
-		return nil, usagef("no profile: pass --profile or set AOPCTL_PROFILE to one of %s in %s", strings.Join(names, ", "), file.path)
+		return nil, usagef("no profile: pass --profile or set AOPCTL_PROFILE (profiles in %s: %s)", file.path, strings.Join(names, ", "))
 	default:
 		p, ok := file.Profiles[profile]
 		if !ok {
-			return nil, usagef("unknown profile %q: want one of %s in %s", profile, strings.Join(names, ", "), file.path)
+			return nil, usagef("unknown profile %q (profiles in %s: %s)", profile, file.path, strings.Join(names, ", "))
 		}
 		c.settings = c.settings.overlay(p)
 	}
@@ -353,8 +405,23 @@ func (a *app) commandConfig(cmd *cobra.Command) (*config, error) {
 		for _, w := range c.file.warnings {
 			fmt.Fprintln(cmd.ErrOrStderr(), w)
 		}
+		if ignored := a.ignoredEnv(); len(ignored) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s is in use, so aopctl ignores %s from the environment.\n", c.file.path, strings.Join(ignored, ", "))
+		}
 	}
 	return c, nil
+}
+
+// ignoredEnv returns the environment variables set that a config file in
+// use replaces. The token is not one, as it falls back to the environment.
+func (a *app) ignoredEnv() []string {
+	var names []string
+	for _, s := range []setting{settingCACert, settingCAKey, settingZoneID, settingHostnames} {
+		if strings.TrimSpace(a.getenv(s.env)) != "" {
+			names = append(names, s.env)
+		}
+	}
+	return names
 }
 
 // lookup returns the value of s, reading a 1Password secret reference, or

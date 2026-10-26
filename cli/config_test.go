@@ -49,20 +49,12 @@ profiles:
 `
 
 // configHarness runs the CLI with the config file content, through
-// AOPCTL_CONFIG, and an environment of decoys that a config file in use
-// must override.
+// AOPCTL_CONFIG.
 func configHarness(t *testing.T, content string) (*harness, string) {
 	t.Helper()
 	h := newHarness(t)
 	path := writeConfig(t, content)
-	other := newTestCA(t, 3650)
-	h.env = map[string]string{
-		"AOPCTL_CONFIG":      path,
-		"AOP_CA_CERT":        other.certPEM,
-		"AOP_CA_KEY":         other.keyPEM,
-		"CLOUDFLARE_ZONE_ID": "ffffffffffffffffffffffffffffffff",
-		"AOP_HOSTNAMES":      hostD,
-	}
+	h.env = map[string]string{"AOPCTL_CONFIG": path}
 	h.secrets = map[string]string{
 		refCert:  h.ca.certPEM,
 		refKey:   h.ca.keyPEM,
@@ -83,8 +75,13 @@ func configApp(t *testing.T, env map[string]string, args ...string) *app {
 }
 
 func TestConfigFile(t *testing.T) {
-	t.Run("hostname status reads only what it needs", func(t *testing.T) {
-		h, _ := configHarness(t, profileConfig)
+	t.Run("hostname status reads only the file and what it needs", func(t *testing.T) {
+		h, path := configHarness(t, profileConfig)
+		// Decoys that the config file in use must override.
+		other := newTestCA(t, 3650)
+		h.env["AOP_CA_CERT"], h.env["AOP_CA_KEY"] = other.certPEM, other.keyPEM
+		h.env["CLOUDFLARE_ZONE_ID"] = "ffffffffffffffffffffffffffffffff"
+		h.env["AOP_HOSTNAMES"] = hostD
 		h.fake.AddCert("old-1", h.ca.issue(t))
 		h.fake.SetAssoc(hostA, "old-1", new(true))
 		code, stdout, stderr := h.run("--profile", "prod", "hostname", "status")
@@ -96,7 +93,7 @@ func TestConfigFile(t *testing.T) {
 		for _, r := range h.fake.Recorded() {
 			assert.Contains(t, r.Path, "/zones/"+cftest.Zone+"/", "request outside the configured zone")
 		}
-		assert.Empty(t, stderr, "stderr")
+		assert.Equal(t, "Warning: "+path+" is in use, so aopctl ignores AOP_CA_CERT, AOP_CA_KEY, CLOUDFLARE_ZONE_ID, AOP_HOSTNAMES from the environment.\n", stderr, "stderr")
 	})
 
 	t.Run("printed commands carry the config flags and run as printed", func(t *testing.T) {
@@ -417,8 +414,8 @@ profiles:
 		{name: "AOPCTL_PROFILE", args: []string{"--config", path}, env: map[string]string{"AOPCTL_PROFILE": "c"}, profile: "c", want: fileSettings{CACert: "top", CAKey: "top", Hostnames: []string{"c.example.com"}}},
 		{name: "empty hostnames replace the top level", args: []string{"--config", path, "--profile", "b"}, profile: "b", want: fileSettings{CACert: "top", CAKey: "top", Hostnames: []string{}}},
 		{name: "no profiles", args: []string{"--config", noProfiles}, want: fileSettings{CACert: "top"}},
-		{name: "none selected", args: []string{"--config", path}, err: "no profile: pass --profile or set AOPCTL_PROFILE to one of a, b, c in " + path},
-		{name: "unknown", args: []string{"--config", path, "--profile", "d"}, err: `unknown profile "d": want one of a, b, c in ` + path},
+		{name: "none selected", args: []string{"--config", path}, err: "no profile: pass --profile or set AOPCTL_PROFILE (profiles in " + path + ": a, b, c)"},
+		{name: "unknown", args: []string{"--config", path, "--profile", "d"}, err: `unknown profile "d" (profiles in ` + path + ": a, b, c)"},
 		{name: "file without profiles", args: []string{"--config", noProfiles, "--profile", "a"}, err: "profile a: " + noProfiles + " has no profiles"},
 		{name: "no config file", env: map[string]string{"AOPCTL_PROFILE": "a"}, err: "profile a needs a config file: pass --config or set AOPCTL_CONFIG"},
 	}
@@ -448,10 +445,14 @@ func TestConfigDecode(t *testing.T) {
 	}{
 		{name: "empty", content: ""},
 		{name: "scalars as text", content: "ca_cert: false\nca_key: 123\ncloudflare_zone_id: 01234567890123456789012345678901\nhostnames: [true]\n", want: fileSettings{CACert: "false", CAKey: "123", ZoneID: "01234567890123456789012345678901", Hostnames: []string{"true"}}},
-		{name: "unknown key", content: "ca_certs: x\n", err: "field ca_certs not found"},
+		{name: "unknown key", content: "ca_certs: x\n", err: `line 1: unknown key "ca_certs": want ca_cert, ca_key, cloudflare_api_token, cloudflare_zone_id, hostnames or profiles`},
+		{name: "unknown key in a profile", content: "profiles:\n  prod:\n    hostname: [a.example.com]\n", err: `line 3: unknown key "hostname": want ca_cert, ca_key, cloudflare_api_token, cloudflare_zone_id or hostnames`},
+		{name: "environment variable as a key", content: "profiles:\n  prod:\n    AOP_CA_CERT: x\n", err: `line 3: unknown key "AOP_CA_CERT": use ca_cert`},
 		{name: "duplicate key", content: "ca_cert: x\nca_cert: y\n", err: `mapping key "ca_cert" already defined`},
-		{name: "mapping as a string", content: "ca_cert: {a: b}\n", err: "cannot unmarshal !!map into string"},
-		{name: "string as hostnames", content: "hostnames: a.example.com\n", err: "cannot unmarshal !!str `a.examp...` into []string"},
+		{name: "mapping as a string", content: "ca_cert: {a: b}\n", err: "line 1: want a single value, not a mapping"},
+		{name: "list as a string", content: "ca_cert: [a, b]\n", err: "line 1: want a single value, not a list"},
+		{name: "string as hostnames", content: "hostnames: a.example.com,b.example.com\n", err: "line 1: hostnames must be a list, such as [app.example.com, admin.example.com], not a single value"},
+		{name: "list as profiles", content: "profiles: [prod]\n", err: "line 1: profiles must map profile names to their settings, not a list"},
 		{name: "second document", content: "ca_cert: x\n---\nca_cert: y\n", err: "want a single YAML document"},
 		{name: "invalid profile name", content: "profiles:\n  'a b': {}\n", err: `invalid profile name "a b"`},
 		{name: "too large", content: "ca_cert: " + strings.Repeat("x", maxConfigSize) + "\n", err: "is larger than 1048576 bytes"},
@@ -569,6 +570,14 @@ func TestCAShowConfig(t *testing.T) {
 		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
 		assert.Contains(t, stdout, "Fingerprint: "+vectorFingerprint)
 		assert.Equal(t, []string{refCert}, h.resolved, "references read")
+	})
+
+	t.Run("empty stdin", func(t *testing.T) {
+		h, _ := configHarness(t, profileConfig)
+		h.secrets[refCert] = vectorCA
+		code, stdout, stderr := h.run("--profile", "prod", "ca", "show")
+		require.Equal(t, 0, code, "exit code; stderr:\n%s", stderr)
+		assert.Contains(t, stdout, "Fingerprint: "+vectorFingerprint)
 	})
 
 	t.Run("stdin wins", func(t *testing.T) {
