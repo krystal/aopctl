@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/krystal/aopctl/compare/v0.1.2...v0.1.3) (2026-10-26)
+
+
+### Features
+
+* read settings from a YAML config file with profiles and 1Password references ([#15](https://github.com/krystal/aopctl/issues/15)) ([1f48d6b](https://github.com/krystal/aopctl/commit/1f48d6b7e09577601224f79f77aa0d3dda993aee))
+
 ## [0.1.2](https://github.com/krystal/aopctl/compare/v0.1.1...v0.1.2) (2026-10-26)
 
 
