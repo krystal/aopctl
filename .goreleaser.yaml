@@ -31,6 +31,9 @@ archives:
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  # The config file's JSON schema, which CI uploads with the archives.
+  extra_files:
+    - glob: ./schemas/config.schema.json
 
 # release-please writes the release notes and creates the draft release, and
 # CI uploads the archives to it. GoReleaser only builds them.

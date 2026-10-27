@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krystal/aopctl/releases/latest/download/config.schema.json",
+  "properties": {
+    "ca_cert": {
+      "type": "string",
+      "description": "The CA certificate, as PEM, or an op:// 1Password reference to it."
+    },
+    "ca_key": {
+      "type": "string",
+      "description": "The CA's private key, as a PKCS#8 PEM, or an op:// 1Password reference to it. Only hostname issue and zone issue read it."
+    },
+    "cloudflare_api_token": {
+      "type": "string",
+      "description": "The Cloudflare API token, or an op:// 1Password reference to it. When neither the profile nor the top level sets one, aopctl uses CLOUDFLARE_API_TOKEN."
+    },
+    "cloudflare_zone_id": {
+      "type": "string",
+      "description": "The zone ID of every hostname and zone command run without --zone, or an op:// 1Password reference to it."
+    },
+    "hostnames": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Every hostname the CA serves, across all zones. A profile's list replaces the top-level one."
+    },
+    "profiles": {
+      "additionalProperties": {
+        "properties": {
+          "ca_cert": {
+            "type": "string",
+            "description": "The CA certificate, as PEM, or an op:// 1Password reference to it."
+          },
+          "ca_key": {
+            "type": "string",
+            "description": "The CA's private key, as a PKCS#8 PEM, or an op:// 1Password reference to it. Only hostname issue and zone issue read it."
+          },
+          "cloudflare_api_token": {
+            "type": "string",
+            "description": "The Cloudflare API token, or an op:// 1Password reference to it. When neither the profile nor the top level sets one, aopctl uses CLOUDFLARE_API_TOKEN."
+          },
+          "cloudflare_zone_id": {
+            "type": "string",
+            "description": "The zone ID of every hostname and zone command run without --zone, or an op:// 1Password reference to it."
+          },
+          "hostnames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "Every hostname the CA serves, across all zones. A profile's list replaces the top-level one."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      },
+      "type": "object",
+      "description": "One profile per CA, selected with --profile or AOPCTL_PROFILE. A profile's settings override the top-level ones."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object"
+}

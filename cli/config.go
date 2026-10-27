@@ -39,12 +39,14 @@ var (
 
 // fileSettings are the settings at the top of the config file or in one of
 // its profiles. A nil Hostnames is unset, and an empty one is set to none.
+// The jsonschema_description tags describe the keys in the config file's
+// JSON schema, schemas/config.schema.json.
 type fileSettings struct {
-	CACert    string   `yaml:"ca_cert"`
-	CAKey     string   `yaml:"ca_key"`
-	Token     string   `yaml:"cloudflare_api_token"`
-	ZoneID    string   `yaml:"cloudflare_zone_id"`
-	Hostnames []string `yaml:"hostnames"`
+	CACert    string   `yaml:"ca_cert" jsonschema_description:"The CA certificate, as PEM, or an op:// 1Password reference to it."`
+	CAKey     string   `yaml:"ca_key" jsonschema_description:"The CA's private key, as a PKCS#8 PEM, or an op:// 1Password reference to it. Only hostname issue and zone issue read it."`
+	Token     string   `yaml:"cloudflare_api_token" jsonschema_description:"The Cloudflare API token, or an op:// 1Password reference to it. When neither the profile nor the top level sets one, aopctl uses CLOUDFLARE_API_TOKEN."`
+	ZoneID    string   `yaml:"cloudflare_zone_id" jsonschema_description:"The zone ID of every hostname and zone command run without --zone, or an op:// 1Password reference to it."`
+	Hostnames []string `yaml:"hostnames" jsonschema_description:"Every hostname the CA serves, across all zones. A profile's list replaces the top-level one."`
 }
 
 // fileConfig is the config file: settings that apply to every profile, and
@@ -52,7 +54,7 @@ type fileSettings struct {
 type fileConfig struct {
 	fileSettings `yaml:",inline"`
 
-	Profiles map[string]fileSettings `yaml:"profiles"`
+	Profiles map[string]fileSettings `yaml:"profiles" jsonschema_description:"One profile per CA, selected with --profile or AOPCTL_PROFILE. A profile's settings override the top-level ones."`
 }
 
 // overlay returns s with the settings p sets replacing its own.

@@ -50,6 +50,7 @@ command line uses [cobra](https://github.com/spf13/cobra).
 [cf-manage-certs]: https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/manage-certificates/
 [op-cli]: https://developer.1password.com/docs/cli/
 [op-app-integration]: https://developer.1password.com/docs/cli/app-integration/
+[vscode-yaml]: https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml
 
 ## Install
 
@@ -197,6 +198,7 @@ settings apply to every profile, which can override them:
 
 ```yaml
 # ~/.config/aopctl/config.yaml
+# yaml-language-server: $schema=https://github.com/krystal/aopctl/releases/latest/download/config.schema.json
 cloudflare_api_token: op://<vault>/<token item>/credential
 profiles:
   production:
@@ -254,6 +256,15 @@ Unknown keys are errors, so a misspelled key doesn't go unnoticed. Values are
 read as text, so `cloudflare_zone_id: 0123...` keeps its leading zero. When
 the file holds a literal `ca_key` or `cloudflare_api_token` rather than a
 reference, and other users can read it, `aopctl` warns you to `chmod 600` it.
+
+Releases after v0.1.3 publish a JSON schema for the config file. With the
+`yaml-language-server` comment from the example, editors that support it,
+such as VS Code with the [YAML extension][vscode-yaml] and JetBrains IDEs,
+validate and complete the file against the latest release's schema. To pin
+the schema to the version you run, use
+`https://github.com/krystal/aopctl/releases/download/vX.Y.Z/config.schema.json`.
+The schema expects text, so quote a value that YAML would read as a number,
+such as an all-digit `cloudflare_zone_id`.
 
 The commands `aopctl` prints for you to run next carry the `--config` and
 `--profile` you gave.
@@ -700,20 +711,22 @@ and `mise.lock` pins the exact version and checksum for linux-x64, linux-arm64
 and macos-arm64. mise skips tool releases younger than three days, and CI
 applies the same cooldown to the mise binary.
 
-| Task                     | What it does                                                                     |
-| ------------------------ | -------------------------------------------------------------------------------- |
-| `mise run setup`         | Install tools and the lefthook pre-commit hook                                   |
-| `mise run check`         | `format:check`, `lint` and `test`; run it before pushing                         |
-| `mise run format`        | Format Go code                                                                   |
-| `mise run format:check`  | Check Go formatting without changing files                                       |
-| `mise run lint`          | golangci-lint, actionlint, zizmor, pinact[^1] and `goreleaser check`             |
-| `mise run test`          | Unit tests                                                                       |
-| `mise run build`         | Snapshot release archives for every platform, in `dist/`                         |
-| `mise run build:release` | Release archives for the tag at `HEAD`, in `dist/`, as the Release workflow runs |
-| `mise run pin:actions`   | Pin GitHub Actions to full commit SHAs                                           |
+| Task                       | What it does                                                                     |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `mise run setup`           | Install tools and the lefthook pre-commit hook                                   |
+| `mise run check`           | `format:check`, `lint` and `test`; run it before pushing                         |
+| `mise run format`          | Format Go code                                                                   |
+| `mise run format:check`    | Check Go formatting without changing files                                       |
+| `mise run lint`            | golangci-lint, actionlint, zizmor, pinact[^1] and `goreleaser check`             |
+| `mise run test`            | Unit tests                                                                       |
+| `mise run generate:schema` | Regenerate `schemas/config.schema.json` from the config file's Go types          |
+| `mise run build`           | Snapshot release archives for every platform, in `dist/`                         |
+| `mise run build:release`   | Release archives for the tag at `HEAD`, in `dist/`, as the Release workflow runs |
+| `mise run pin:actions`     | Pin GitHub Actions to full commit SHAs                                           |
 
 CI runs `lint`, `format:check`, `test` and `build` as separate jobs, so a
-change that breaks a release build fails before it reaches a release.
+change that breaks a release build fails before it reaches a release. `test`
+fails when the committed schema no longer matches the config file's Go types.
 
 [^1]: zizmor runs its online audits, such as `known-vulnerable-actions`, only
     when `GH_TOKEN` or `GITHUB_TOKEN` is set, as in CI, and runs offline
@@ -759,7 +772,8 @@ GitHub's immutable releases, whose assets cannot change after publishing:
    for the tag, on the branch it released from.
 3. The Release workflow checks that it runs on `main` or a `release-*.x`
    branch and that the release is still a draft. It builds the archives and
-   checksums file from the tag with GoReleaser, and uploads them to the draft.
+   checksums file from the tag with GoReleaser, and uploads them to the draft
+   with the config file's JSON schema.
 4. It then publishes the release. Releases from `main` become the latest
    release; releases from a maintenance branch do not.
 
