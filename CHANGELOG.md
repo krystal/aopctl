@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/krystal/aopctl/compare/v0.1.3...v0.1.4) (2026-10-27)
+
+
+### Features
+
+* publish a JSON schema for the config file ([#17](https://github.com/krystal/aopctl/issues/17)) ([4ae69ae](https://github.com/krystal/aopctl/commit/4ae69ae0adc314c6ccf6f59f427e63438384ddc1))
+
 ## [0.1.3](https://github.com/krystal/aopctl/compare/v0.1.2...v0.1.3) (2026-10-26)
 
 
